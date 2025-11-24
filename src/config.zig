@@ -146,7 +146,7 @@ pub const ServerConfig = struct {
 
         const canonical_cipher = canonicalizeCipher(self.cipher) orelse {
             std.debug.print("[CONFIG] Error: invalid cipher '{s}'\n", .{self.cipher});
-            std.debug.print("[CONFIG] Valid ciphers: ChaChaPoly, AES128GCM, AES256GCM, AEGIS128L, AEGIS256, none\n", .{});
+            std.debug.print("[CONFIG] Valid ciphers: ChaChaPoly, AES128GCM, AES256GCM, AEGIS128L, AEGIS128X2, AEGIS128X4, AEGIS256, AEGIS256X2, AEGIS256X4, none\n", .{});
             return error.InvalidCipher;
         };
 
@@ -441,7 +441,7 @@ pub const ClientConfig = struct {
 
         const canonical_cipher = canonicalizeCipher(self.cipher) orelse {
             std.debug.print("[CONFIG] Error: invalid cipher '{s}'\n", .{self.cipher});
-            std.debug.print("[CONFIG] Valid ciphers: ChaChaPoly, AES128GCM, AES256GCM, AEGIS128L, AEGIS256, none\n", .{});
+            std.debug.print("[CONFIG] Valid ciphers: ChaChaPoly, AES128GCM, AES256GCM, AEGIS128L, AEGIS128X2, AEGIS128X4, AEGIS256, AEGIS256X2, AEGIS256X4, none\n", .{});
             return error.InvalidCipher;
         };
 
@@ -712,8 +712,20 @@ fn canonicalizeCipher(value: []const u8) ?[]const u8 {
     if (std.ascii.eqlIgnoreCase(value, "aegis128l")) {
         return "aegis128l";
     }
+    if (std.ascii.eqlIgnoreCase(value, "aegis128x2")) {
+        return "aegis128x2";
+    }
+    if (std.ascii.eqlIgnoreCase(value, "aegis128x4")) {
+        return "aegis128x4";
+    }
     if (std.ascii.eqlIgnoreCase(value, "aegis256")) {
         return "aegis256";
+    }
+    if (std.ascii.eqlIgnoreCase(value, "aegis256x2")) {
+        return "aegis256x2";
+    }
+    if (std.ascii.eqlIgnoreCase(value, "aegis256x4")) {
+        return "aegis256x4";
     }
     return null;
 }
