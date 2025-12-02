@@ -37,28 +37,118 @@ test "transport cipher advances nonce and output" {
     try std.testing.expectEqual(@as(u64, 2), cipher.nonce.load(.monotonic));
 }
 
+test "AEGIS-128X2 encrypt/decrypt roundtrip" {
+    var key: [KEY_LEN]u8 = undefined;
+    @memset(&key, 0x42);
+
+    var cipher_enc = TransportCipher.init(key, .aegis128x2);
+    var cipher_dec = TransportCipher.init(key, .aegis128x2);
+
+    const plaintext = "Hello, AEGIS-128X2!";
+    var ciphertext: [plaintext.len + TAG_LEN]u8 = undefined;
+    var decrypted: [plaintext.len]u8 = undefined;
+
+    try cipher_enc.encrypt(plaintext, &ciphertext);
+    try cipher_dec.decrypt(&ciphertext, &decrypted);
+
+    try std.testing.expectEqualStrings(plaintext, &decrypted);
+}
+
+test "AEGIS-128X4 encrypt/decrypt roundtrip" {
+    var key: [KEY_LEN]u8 = undefined;
+    @memset(&key, 0x42);
+
+    var cipher_enc = TransportCipher.init(key, .aegis128x4);
+    var cipher_dec = TransportCipher.init(key, .aegis128x4);
+
+    const plaintext = "Hello, AEGIS-128X4!";
+    var ciphertext: [plaintext.len + TAG_LEN]u8 = undefined;
+    var decrypted: [plaintext.len]u8 = undefined;
+
+    try cipher_enc.encrypt(plaintext, &ciphertext);
+    try cipher_dec.decrypt(&ciphertext, &decrypted);
+
+    try std.testing.expectEqualStrings(plaintext, &decrypted);
+}
+
+test "CipherType.fromString parses new AEGIS variants" {
+    try std.testing.expectEqual(CipherType.aegis128x2, try CipherType.fromString("aegis128x2"));
+    try std.testing.expectEqual(CipherType.aegis128x4, try CipherType.fromString("aegis128x4"));
+    try std.testing.expectEqual(@as(usize, 16), CipherType.aegis128x2.nonceLen());
+    try std.testing.expectEqual(@as(usize, 16), CipherType.aegis128x4.nonceLen());
+}
+
+test "AEGIS-256X2 encrypt/decrypt roundtrip" {
+    var key: [KEY_LEN]u8 = undefined;
+    @memset(&key, 0x42);
+
+    var cipher_enc = TransportCipher.init(key, .aegis256x2);
+    var cipher_dec = TransportCipher.init(key, .aegis256x2);
+
+    const plaintext = "Hello, AEGIS-256X2!";
+    var ciphertext: [plaintext.len + TAG_LEN]u8 = undefined;
+    var decrypted: [plaintext.len]u8 = undefined;
+
+    try cipher_enc.encrypt(plaintext, &ciphertext);
+    try cipher_dec.decrypt(&ciphertext, &decrypted);
+
+    try std.testing.expectEqualStrings(plaintext, &decrypted);
+}
+
+test "AEGIS-256X4 encrypt/decrypt roundtrip" {
+    var key: [KEY_LEN]u8 = undefined;
+    @memset(&key, 0x42);
+
+    var cipher_enc = TransportCipher.init(key, .aegis256x4);
+    var cipher_dec = TransportCipher.init(key, .aegis256x4);
+
+    const plaintext = "Hello, AEGIS-256X4!";
+    var ciphertext: [plaintext.len + TAG_LEN]u8 = undefined;
+    var decrypted: [plaintext.len]u8 = undefined;
+
+    try cipher_enc.encrypt(plaintext, &ciphertext);
+    try cipher_dec.decrypt(&ciphertext, &decrypted);
+
+    try std.testing.expectEqualStrings(plaintext, &decrypted);
+}
+
+test "CipherType.fromString parses AEGIS-256 variants" {
+    try std.testing.expectEqual(CipherType.aegis256x2, try CipherType.fromString("aegis256x2"));
+    try std.testing.expectEqual(CipherType.aegis256x4, try CipherType.fromString("aegis256x4"));
+    try std.testing.expectEqual(@as(usize, 32), CipherType.aegis256x2.nonceLen());
+    try std.testing.expectEqual(@as(usize, 32), CipherType.aegis256x4.nonceLen());
+}
+
 /// Cipher type for Noise transport
 pub const CipherType = enum {
     chacha20poly1305,
     aes256gcm,
     aes128gcm,
     aegis128l,
+    aegis128x2,
+    aegis128x4,
     aegis256,
+    aegis256x2,
+    aegis256x4,
 
     pub fn fromString(s: []const u8) !CipherType {
         if (std.mem.eql(u8, s, "chacha20poly1305")) return .chacha20poly1305;
         if (std.mem.eql(u8, s, "aes256gcm")) return .aes256gcm;
         if (std.mem.eql(u8, s, "aes128gcm")) return .aes128gcm;
         if (std.mem.eql(u8, s, "aegis128l")) return .aegis128l;
+        if (std.mem.eql(u8, s, "aegis128x2")) return .aegis128x2;
+        if (std.mem.eql(u8, s, "aegis128x4")) return .aegis128x4;
         if (std.mem.eql(u8, s, "aegis256")) return .aegis256;
+        if (std.mem.eql(u8, s, "aegis256x2")) return .aegis256x2;
+        if (std.mem.eql(u8, s, "aegis256x4")) return .aegis256x4;
         return error.InvalidCipher;
     }
 
     pub fn nonceLen(self: CipherType) usize {
         return switch (self) {
             .chacha20poly1305, .aes256gcm, .aes128gcm => 12,
-            .aegis128l => 16,
-            .aegis256 => 32,
+            .aegis128l, .aegis128x2, .aegis128x4 => 16,
+            .aegis256, .aegis256x2, .aegis256x4 => 32,
         };
     }
 };
@@ -159,9 +249,55 @@ pub const TransportCipher = struct {
                     key128,
                 );
             },
+            .aegis128x2 => {
+                const nonce = makeNonce16(nonce_val);
+                const key128 = self.key[0..16].*;
+                crypto.aead.aegis.Aegis128X2.encrypt(
+                    ciphertext[0..plaintext.len],
+                    ciphertext[plaintext.len..][0..TAG_LEN],
+                    plaintext,
+                    &[_]u8{},
+                    nonce,
+                    key128,
+                );
+            },
+            .aegis128x4 => {
+                const nonce = makeNonce16(nonce_val);
+                const key128 = self.key[0..16].*;
+                crypto.aead.aegis.Aegis128X4.encrypt(
+                    ciphertext[0..plaintext.len],
+                    ciphertext[plaintext.len..][0..TAG_LEN],
+                    plaintext,
+                    &[_]u8{},
+                    nonce,
+                    key128,
+                );
+            },
             .aegis256 => {
                 const nonce = makeNonce32(nonce_val);
                 crypto.aead.aegis.Aegis256.encrypt(
+                    ciphertext[0..plaintext.len],
+                    ciphertext[plaintext.len..][0..TAG_LEN],
+                    plaintext,
+                    &[_]u8{},
+                    nonce,
+                    self.key,
+                );
+            },
+            .aegis256x2 => {
+                const nonce = makeNonce32(nonce_val);
+                crypto.aead.aegis.Aegis256X2.encrypt(
+                    ciphertext[0..plaintext.len],
+                    ciphertext[plaintext.len..][0..TAG_LEN],
+                    plaintext,
+                    &[_]u8{},
+                    nonce,
+                    self.key,
+                );
+            },
+            .aegis256x4 => {
+                const nonce = makeNonce32(nonce_val);
+                crypto.aead.aegis.Aegis256X4.encrypt(
                     ciphertext[0..plaintext.len],
                     ciphertext[plaintext.len..][0..TAG_LEN],
                     plaintext,
@@ -230,9 +366,55 @@ pub const TransportCipher = struct {
                     key128,
                 ) catch return error.AuthenticationFailed;
             },
+            .aegis128x2 => {
+                const nonce = makeNonce16(nonce_val);
+                const key128 = self.key[0..16].*;
+                crypto.aead.aegis.Aegis128X2.decrypt(
+                    plaintext,
+                    ct,
+                    tag.*,
+                    &[_]u8{},
+                    nonce,
+                    key128,
+                ) catch return error.AuthenticationFailed;
+            },
+            .aegis128x4 => {
+                const nonce = makeNonce16(nonce_val);
+                const key128 = self.key[0..16].*;
+                crypto.aead.aegis.Aegis128X4.decrypt(
+                    plaintext,
+                    ct,
+                    tag.*,
+                    &[_]u8{},
+                    nonce,
+                    key128,
+                ) catch return error.AuthenticationFailed;
+            },
             .aegis256 => {
                 const nonce = makeNonce32(nonce_val);
                 crypto.aead.aegis.Aegis256.decrypt(
+                    plaintext,
+                    ct,
+                    tag.*,
+                    &[_]u8{},
+                    nonce,
+                    self.key,
+                ) catch return error.AuthenticationFailed;
+            },
+            .aegis256x2 => {
+                const nonce = makeNonce32(nonce_val);
+                crypto.aead.aegis.Aegis256X2.decrypt(
+                    plaintext,
+                    ct,
+                    tag.*,
+                    &[_]u8{},
+                    nonce,
+                    self.key,
+                ) catch return error.AuthenticationFailed;
+            },
+            .aegis256x4 => {
+                const nonce = makeNonce32(nonce_val);
+                crypto.aead.aegis.Aegis256X4.decrypt(
                     plaintext,
                     ct,
                     tag.*,
@@ -353,9 +535,55 @@ fn aeadEncrypt(
                 key128,
             );
         },
+        .aegis128x2 => {
+            const nonce16 = [_]u8{0} ** 16;
+            const key128 = key[0..16].*;
+            crypto.aead.aegis.Aegis128X2.encrypt(
+                ciphertext,
+                tag,
+                plaintext,
+                ad,
+                nonce16,
+                key128,
+            );
+        },
+        .aegis128x4 => {
+            const nonce16 = [_]u8{0} ** 16;
+            const key128 = key[0..16].*;
+            crypto.aead.aegis.Aegis128X4.encrypt(
+                ciphertext,
+                tag,
+                plaintext,
+                ad,
+                nonce16,
+                key128,
+            );
+        },
         .aegis256 => {
             const nonce32 = [_]u8{0} ** 32;
             crypto.aead.aegis.Aegis256.encrypt(
+                ciphertext,
+                tag,
+                plaintext,
+                ad,
+                nonce32,
+                key,
+            );
+        },
+        .aegis256x2 => {
+            const nonce32 = [_]u8{0} ** 32;
+            crypto.aead.aegis.Aegis256X2.encrypt(
+                ciphertext,
+                tag,
+                plaintext,
+                ad,
+                nonce32,
+                key,
+            );
+        },
+        .aegis256x4 => {
+            const nonce32 = [_]u8{0} ** 32;
+            crypto.aead.aegis.Aegis256X4.encrypt(
                 ciphertext,
                 tag,
                 plaintext,
@@ -421,9 +649,55 @@ fn aeadDecrypt(
                 key128,
             ) catch return error.DecryptionFailed;
         },
+        .aegis128x2 => {
+            const nonce16 = [_]u8{0} ** 16;
+            const key128 = key[0..16].*;
+            crypto.aead.aegis.Aegis128X2.decrypt(
+                plaintext,
+                ciphertext,
+                tag,
+                ad,
+                nonce16,
+                key128,
+            ) catch return error.DecryptionFailed;
+        },
+        .aegis128x4 => {
+            const nonce16 = [_]u8{0} ** 16;
+            const key128 = key[0..16].*;
+            crypto.aead.aegis.Aegis128X4.decrypt(
+                plaintext,
+                ciphertext,
+                tag,
+                ad,
+                nonce16,
+                key128,
+            ) catch return error.DecryptionFailed;
+        },
         .aegis256 => {
             const nonce32 = [_]u8{0} ** 32;
             crypto.aead.aegis.Aegis256.decrypt(
+                plaintext,
+                ciphertext,
+                tag,
+                ad,
+                nonce32,
+                key,
+            ) catch return error.DecryptionFailed;
+        },
+        .aegis256x2 => {
+            const nonce32 = [_]u8{0} ** 32;
+            crypto.aead.aegis.Aegis256X2.decrypt(
+                plaintext,
+                ciphertext,
+                tag,
+                ad,
+                nonce32,
+                key,
+            ) catch return error.DecryptionFailed;
+        },
+        .aegis256x4 => {
+            const nonce32 = [_]u8{0} ** 32;
+            crypto.aead.aegis.Aegis256X4.decrypt(
                 plaintext,
                 ciphertext,
                 tag,
@@ -479,7 +753,11 @@ pub fn noiseXXHandshake(
         .aes256gcm => "Noise_XX_25519_AESGCM_SHA256",
         .aes128gcm => "Noise_XX_25519_AES128GCM_SHA256",
         .aegis128l => "Noise_XX_25519_AEGIS128L_SHA256",
+        .aegis128x2 => "Noise_XX_25519_AEGIS128X2_SHA256",
+        .aegis128x4 => "Noise_XX_25519_AEGIS128X4_SHA256",
         .aegis256 => "Noise_XX_25519_AEGIS256_SHA256",
+        .aegis256x2 => "Noise_XX_25519_AEGIS256X2_SHA256",
+        .aegis256x4 => "Noise_XX_25519_AEGIS256X4_SHA256",
     };
     crypto.hash.sha2.Sha256.hash(protocol_name, &h, .{});
     chaining_key = h;
