@@ -127,10 +127,10 @@ pub fn connectViaSocks5(
 ) !posix.fd_t {
     // Connect to proxy server
     const proxy_addr = try net.Address.resolveIp(proxy_host, proxy_port);
-    const fd = try posix.socket(proxy_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const fd = try common.createSocket(proxy_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
 
-    try posix.connect(fd, &proxy_addr.any, proxy_addr.getOsSockLen());
+    try common.connectSocket(fd, &proxy_addr.any, proxy_addr.getOsSockLen());
 
     // SOCKS5 greeting - negotiate authentication method
     const has_auth = proxy_username.len > 0;
@@ -289,10 +289,10 @@ pub fn connectViaHttpConnect(
 ) !posix.fd_t {
     // Connect to proxy server
     const proxy_addr = try net.Address.resolveIp(proxy_host, proxy_port);
-    const fd = try posix.socket(proxy_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const fd = try common.createSocket(proxy_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
 
-    try posix.connect(fd, &proxy_addr.any, proxy_addr.getOsSockLen());
+    try common.connectSocket(fd, &proxy_addr.any, proxy_addr.getOsSockLen());
 
     // Build CONNECT request
     var request_buf: [2048]u8 = undefined;
@@ -351,7 +351,7 @@ pub fn connectViaHttpConnect(
 
     // Read until we get \r\n\r\n (end of headers)
     while (response_len < response_buf.len) {
-        const n = posix.recv(fd, response_buf[response_len..], 0) catch |err| return err;
+        const n = posix.recv(common.toSocket(fd), response_buf[response_len..], 0) catch |err| return err;
         if (n == 0) return error.ProxyConnectionClosed;
         response_len += n;
 
@@ -403,9 +403,9 @@ pub fn connectWithProxy(
         if (proxy.proxy_type == .none) {
             // No proxy, direct connection
             const addr = try net.Address.resolveIp(target_host, target_port);
-            const fd = try posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+            const fd = try common.createSocket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
             errdefer posix.close(fd);
-            try posix.connect(fd, &addr.any, addr.getOsSockLen());
+            try common.connectSocket(fd, &addr.any, addr.getOsSockLen());
             return fd;
         }
 
@@ -434,9 +434,9 @@ pub fn connectWithProxy(
 
     // No proxy config provided, direct connection
     const addr = try net.Address.resolveIp(target_host, target_port);
-    const fd = try posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const fd = try common.createSocket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
-    try posix.connect(fd, &addr.any, addr.getOsSockLen());
+    try common.connectSocket(fd, &addr.any, addr.getOsSockLen());
     return fd;
 }
 

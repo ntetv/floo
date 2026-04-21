@@ -35,8 +35,8 @@ var tunnel_tx_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 var tunnel_rx_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 var flush_stats_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var sighup_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-var signal_pipe_read_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1);
-var signal_pipe_write_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1);
+var signal_pipe_read_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(common.INVALID_FD);
+var signal_pipe_write_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(common.INVALID_FD);
 var cpu_assigner: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cached_cpu_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 
@@ -65,7 +65,7 @@ fn cleanupSignalPipe() void {
 
 fn drainSignalPipe() void {
     const rd = signal_pipe_read_fd.load(.acquire);
-    if (rd == -1) return;
+    if (rd == common.INVALID_FD) return;
 
     var buf: [32]u8 = undefined;
     while (true) {
@@ -217,11 +217,11 @@ fn loadServerConfigWithOverrides(allocator: std.mem.Allocator, opts: *CliOptions
 
 fn probeTcpTarget(host: []const u8, port: u16) !i128 {
     const addr = try resolveHostPort(host, port);
-    const fd = try posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const fd = try common.createSocket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
 
     const start = common.nanoTimestamp();
-    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| {
+    common.connectSocket(fd, &addr.any, addr.getOsSockLen()) catch |err| {
         return err;
     };
     const done = common.nanoTimestamp();
@@ -339,12 +339,12 @@ fn runServerDoctor(allocator: std.mem.Allocator, opts: *CliOptions) !bool {
         return false;
     };
 
-    const listen_fd = posix.socket(listen_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const listen_fd = common.createSocket(listen_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     if (listen_fd) |fd| {
         defer posix.close(fd);
         const reuse: c_int = 1;
-        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(reuse)) catch {};
-        const bind_result = posix.bind(fd, &listen_addr.any, listen_addr.getOsSockLen());
+        posix.setsockopt(common.toSocket(fd), posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(reuse)) catch {};
+        const bind_result = common.bindSocket(fd, &listen_addr.any, listen_addr.getOsSockLen());
         if (bind_result) |_| {
             diagnostics.reportCheck(.ok, "Bind check succeeded on {s}:{d}", .{ cfg.bind, cfg.port });
         } else |err| {
@@ -421,13 +421,13 @@ const ReverseListener = struct {
         tunnel_conn: *TunnelConnection,
     ) !*ReverseListener {
         const addr = try resolveHostPort(service.address, service.port);
-        const listen_fd = try posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+        const listen_fd = try common.createSocket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
         errdefer posix.close(listen_fd);
 
         const reuse: c_int = 1;
-        try posix.setsockopt(listen_fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(reuse));
-        try posix.bind(listen_fd, &addr.any, addr.getOsSockLen());
-        try posix.listen(listen_fd, common.LISTEN_BACKLOG);
+        try posix.setsockopt(common.toSocket(listen_fd), posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(reuse));
+        try common.bindSocket(listen_fd, &addr.any, addr.getOsSockLen());
+        try common.listenSocket(listen_fd, common.LISTEN_BACKLOG);
 
         const listener = try allocator.create(ReverseListener);
         listener.* = .{
@@ -458,16 +458,10 @@ const ReverseListener = struct {
         while (self.running.load(.acquire)) {
             if (!self.tunnel_conn.running.load(.acquire)) break;
 
-            const client_fd_raw = c.accept(self.listen_fd, null, null);
-            if (client_fd_raw == -1) {
-                // Check errno if needed, but for now just continue/break logic
-                // Assuming blocking accept, or non-blocking?
-                // posix.accept was catching error.Interrupted.
-                // c.accept returns -1.
-                continue;
+            const client_fd = common.acceptSocket(self.listen_fd, null, null, 0) catch continue;
+            if (builtin.target.os.tag != .windows) {
+                _ = posix.fcntl(client_fd, posix.F.SETFD, posix.FD_CLOEXEC) catch {};
             }
-            const client_fd: posix.fd_t = client_fd_raw;
-            _ = posix.fcntl(client_fd, posix.F.SETFD, posix.FD_CLOEXEC) catch {};
 
             std.debug.print("[REVERSE] Accepted connection on {s}:{}\n", .{ self.service.address, self.service.port });
 
@@ -524,7 +518,7 @@ const ReverseListener = struct {
     fn stop(self: *ReverseListener) void {
         if (self.thread_joined.swap(true, .acq_rel)) return;
         self.running.store(false, .release);
-        posix.shutdown(self.listen_fd, .recv) catch {};
+        posix.shutdown(common.toSocket(self.listen_fd), .recv) catch {};
         self.thread.join();
         posix.close(self.listen_fd);
     }
@@ -634,7 +628,7 @@ const TunnelConnection = struct {
                 const remaining_ms = total_sleep_ms - slept_ms;
                 const this_sleep_ms = @min(sleep_increment_ms, remaining_ms);
                 const ns = @as(u64, this_sleep_ms) * std.time.ns_per_ms;
-                posix.nanosleep(ns / std.time.ns_per_s, ns % std.time.ns_per_s);
+                common.crossSleep(ns);
                 slept_ms += this_sleep_ms;
             }
 
@@ -766,7 +760,7 @@ const TunnelConnection = struct {
             poll_entries.clearRetainingCapacity();
 
             poll_fds.append(global_allocator, .{
-                .fd = self.tunnel_fd,
+                .fd = common.toSocket(self.tunnel_fd),
                 .events = posix.POLL.IN,
                 .revents = 0,
             }) catch unreachable;
@@ -782,7 +776,7 @@ const TunnelConnection = struct {
                     continue;
                 };
                 poll_fds.append(global_allocator, .{
-                    .fd = stream_ptr.target_fd,
+                    .fd = common.toSocket(stream_ptr.target_fd),
                     .events = posix.POLL.IN,
                     .revents = 0,
                 }) catch unreachable;
@@ -813,7 +807,7 @@ const TunnelConnection = struct {
                     .tunnel => {
                         if ((fd_info.revents & posix.POLL.IN) == 0) continue;
 
-                        const n = posix.recv(self.tunnel_fd, &buf, 0) catch |err| {
+                        const n = posix.recv(common.toSocket(self.tunnel_fd), &buf, 0) catch |err| {
                             std.debug.print("[TUNNEL] Recv error: {}\n", .{err});
                             fatal_error = true;
                             break :loop;
@@ -1047,7 +1041,7 @@ const TunnelConnection = struct {
 
         // Read directly into frame buffer at offset 7
         const recv_slice = stream.frame_buffer[message_header_len..][0..max_read];
-        const n = posix.recv(stream.target_fd, recv_slice, 0) catch |err| switch (err) {
+        const n = posix.recv(common.toSocket(stream.target_fd), recv_slice, 0) catch |err| switch (err) {
             error.WouldBlock => return,
             else => return err,
         };
@@ -1136,13 +1130,13 @@ const TunnelConnection = struct {
         switch (service.transport) {
             .tcp => {
                 const address = try resolveHostPort(service.address, service.port);
-                const target_fd = try posix.socket(address.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+                const target_fd = try common.createSocket(address.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
                 var target_fd_guard = true;
                 defer if (target_fd_guard) posix.close(target_fd);
 
                 setSockOpts(target_fd, self.cfg);
 
-                try posix.connect(target_fd, &address.any, address.getOsSockLen());
+                try common.connectSocket(target_fd, &address.any, address.getOsSockLen());
 
                 tracePrint(enable_stream_trace, "[STREAM {}] Connected to {s}:{}\n", .{ msg.stream_id, service.address, service.port });
 
@@ -1207,7 +1201,7 @@ const TunnelConnection = struct {
         if (!self.running.load(.acquire)) return;
         std.debug.print("[TUNNEL] Send failure: {}\n", .{err});
         self.running.store(false, .release);
-        posix.shutdown(self.tunnel_fd, .both) catch {};
+        posix.shutdown(common.toSocket(self.tunnel_fd), .both) catch {};
     }
 
     /// Send all data to a file descriptor, looping until complete.
@@ -1248,7 +1242,7 @@ const TunnelConnection = struct {
         }
 
         posix.close(self.tunnel_fd);
-        self.tunnel_fd = -1;
+        self.tunnel_fd = common.INVALID_FD;
     }
 
     fn destroy(self: *TunnelConnection) void {
@@ -1260,9 +1254,9 @@ const TunnelConnection = struct {
             self.udp_service_id = null;
         }
 
-        if (self.tunnel_fd != -1) {
+        if (self.tunnel_fd != common.INVALID_FD) {
             posix.close(self.tunnel_fd);
-            self.tunnel_fd = -1;
+            self.tunnel_fd = common.INVALID_FD;
         }
 
         self.channel.deinit();
@@ -1336,6 +1330,7 @@ test "forwardTargetData sends plaintext frames" {
 }
 
 pub fn main() !void {
+    common.initWinSock();
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -1471,13 +1466,13 @@ pub fn main() !void {
 
     // Create listen socket
     const listen_addr = try resolveHostPort(cfg.bind, port);
-    const listen_fd = try posix.socket(listen_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const listen_fd = try common.createSocket(listen_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     defer posix.close(listen_fd);
 
-    try posix.setsockopt(listen_fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+    try posix.setsockopt(common.toSocket(listen_fd), posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
 
-    try posix.bind(listen_fd, &listen_addr.any, listen_addr.getOsSockLen());
-    try posix.listen(listen_fd, common.LISTEN_BACKLOG);
+    try common.bindSocket(listen_fd, &listen_addr.any, listen_addr.getOsSockLen());
+    try common.listenSocket(listen_fd, common.LISTEN_BACKLOG);
 
     var addr_buf: [64]u8 = undefined;
     std.debug.print("[SERVER] Listening on {s}\n", .{formatAddress(listen_addr, &addr_buf)});
@@ -1501,7 +1496,7 @@ pub fn main() !void {
         for (connections.items) |entry| {
             entry.conn.running.store(false, .release);
             // Shutdown tunnel socket to unblock recv() in connection thread
-            posix.shutdown(entry.conn.tunnel_fd, .recv) catch {};
+            posix.shutdown(common.toSocket(entry.conn.tunnel_fd), .recv) catch {};
         }
         // Wait for threads and cleanup
         for (connections.items) |entry| {
@@ -1552,18 +1547,18 @@ pub fn main() !void {
         // Accept with timeout (poll for shutdown and signal pipe)
         var poll_buf: [2]posix.pollfd = undefined;
         var poll_count: usize = 1;
-        poll_buf[0] = .{ .fd = listen_fd, .events = posix.POLL.IN, .revents = 0 };
+        poll_buf[0] = .{ .fd = common.toSocket(listen_fd), .events = posix.POLL.IN, .revents = 0 };
         const signal_fd = signal_pipe_read_fd.load(.acquire);
-        if (signal_fd != -1) {
+        if (signal_fd != common.INVALID_FD) {
             poll_count = 2;
-            poll_buf[1] = .{ .fd = signal_fd, .events = posix.POLL.IN, .revents = 0 };
+            poll_buf[1] = .{ .fd = common.toSocket(signal_fd), .events = posix.POLL.IN, .revents = 0 };
         } else {
             poll_count = 1;
         }
 
         const ready = posix.poll(poll_buf[0..poll_count], 1000) catch continue; // 1s timeout
 
-        if (signal_fd != -1) {
+        if (signal_fd != common.INVALID_FD) {
             const signal_events = poll_buf[1].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR);
             if (signal_events != 0) {
                 drainSignalPipe();
@@ -1573,14 +1568,10 @@ pub fn main() !void {
         if (ready == 0) continue; // Timeout, check flags
         if ((poll_buf[0].revents & posix.POLL.IN) == 0) continue;
 
-        const tunnel_fd_raw = c.accept(listen_fd, null, null);
-        if (tunnel_fd_raw == -1) {
-            // std.debug.print("[SERVER] Accept error\n", .{});
-            continue;
+        const tunnel_fd = common.acceptSocket(listen_fd, null, null, 0) catch continue;
+        if (builtin.target.os.tag != .windows) {
+            _ = posix.fcntl(tunnel_fd, posix.F.SETFD, posix.FD_CLOEXEC) catch {};
         }
-        const tunnel_fd: posix.fd_t = tunnel_fd_raw;
-        // Best effort CLOEXEC
-        _ = posix.fcntl(tunnel_fd, posix.F.SETFD, posix.FD_CLOEXEC) catch {};
 
         // Apply rate limiting to prevent connection flood attacks
         if (!rate_limiter.tryAcquire()) {
@@ -1616,7 +1607,7 @@ pub fn main() !void {
         connections.append(allocator, .{ .conn = tunnel_conn, .thread = thread }) catch |err| {
             std.debug.print("[SERVER] Failed to track connection: {}\n", .{err});
             tunnel_conn.running.store(false, .release);
-            posix.shutdown(tunnel_conn.tunnel_fd, .recv) catch {};
+            posix.shutdown(common.toSocket(tunnel_conn.tunnel_fd), .recv) catch {};
             thread.join();
             tunnel_conn.destroy();
             continue;
@@ -1695,20 +1686,20 @@ fn reverseServiceListener(ctx_ptr: *anyopaque) void {
         return;
     };
 
-    const listen_fd = posix.socket(local_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
+    const listen_fd = common.createSocket(local_addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
         std.debug.print("[REVERSE-SERVICE] Failed to create socket for service_id={}: {}\n", .{ ctx.service_id, err });
         return;
     };
     defer posix.close(listen_fd);
 
-    posix.setsockopt(listen_fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1))) catch {};
+    posix.setsockopt(common.toSocket(listen_fd), posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1))) catch {};
 
-    posix.bind(listen_fd, &local_addr.any, local_addr.getOsSockLen()) catch |err| {
+    common.bindSocket(listen_fd, &local_addr.any, local_addr.getOsSockLen()) catch |err| {
         std.debug.print("[REVERSE-SERVICE] Failed to bind service_id={} on port {}: {}\n", .{ ctx.service_id, ctx.listen_port, err });
         return;
     };
 
-    posix.listen(listen_fd, common.LISTEN_BACKLOG) catch |err| {
+    common.listenSocket(listen_fd, common.LISTEN_BACKLOG) catch |err| {
         std.debug.print("[REVERSE-SERVICE] Failed to listen for service_id={}: {}\n", .{ ctx.service_id, err });
         return;
     };
@@ -1719,13 +1710,13 @@ fn reverseServiceListener(ctx_ptr: *anyopaque) void {
     while (!shutdown_flag.load(.acquire) and ctx.tunnel_conn.running.load(.acquire)) {
         // Poll for accept with timeout
         var fds = [_]posix.pollfd{
-            .{ .fd = listen_fd, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = common.toSocket(listen_fd), .events = posix.POLL.IN, .revents = 0 },
         };
 
         const ready = posix.poll(&fds, 1000) catch continue; // 1s timeout
         if (ready == 0) continue; // Timeout, check shutdown
 
-        const user_fd = posix.accept(listen_fd, null, null, posix.SOCK.CLOEXEC) catch |err| {
+        const user_fd = common.acceptSocket(listen_fd, null, null, posix.SOCK.CLOEXEC) catch |err| {
             std.debug.print("[REVERSE-SERVICE] Accept error for service_id={}: {}\n", .{ ctx.service_id, err });
             continue;
         };

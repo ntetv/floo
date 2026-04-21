@@ -3,6 +3,19 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const native_endian = builtin.cpu.arch.endian();
 
+/// Windows ADDRINFOA layout.
+/// Workaround: ws2_32.addrinfo is missing from Zig 0.16.0-dev.1484 std lib.
+const WinAddrInfo = extern struct {
+    flags: c_int,
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
+    addrlen: usize,
+    canonname: ?[*:0]u8,
+    addr: ?*posix.sockaddr,
+    next: ?*@This(),
+};
+
 pub const Address = extern union {
     any: posix.sockaddr,
     in: posix.sockaddr.in,
@@ -86,16 +99,6 @@ pub const Address = extern union {
     }
 
     pub fn resolveIp(host: []const u8, port: u16) !Address {
-        const c = std.c;
-        var hints: c.addrinfo = undefined;
-        // hints must be zeroed?
-        @memset(@as([*]u8, @ptrCast(&hints))[0..@sizeOf(c.addrinfo)], 0);
-
-        hints.flags = std.mem.zeroes(@TypeOf(hints.flags));
-        hints.family = posix.AF.UNSPEC;
-        hints.socktype = posix.SOCK.STREAM;
-        hints.protocol = posix.IPPROTO.TCP;
-
         // Host string needs to be null-terminated for C
         var host_z_buf: [256]u8 = undefined;
         if (host.len >= host_z_buf.len) return error.NameTooLong;
@@ -106,25 +109,74 @@ pub const Address = extern union {
         var port_buf: [16]u8 = undefined;
         const port_str = std.fmt.bufPrintZ(&port_buf, "{}", .{port}) catch return error.Unexpected;
 
-        var res: ?*c.addrinfo = null;
-        const rc = c.getaddrinfo(host_z, port_str, &hints, &res);
-        if (@intFromEnum(rc) != 0) {
-            return error.UnknownHost;
-        }
-        defer if (res) |r| c.freeaddrinfo(r);
+        if (builtin.target.os.tag == .windows) {
+            // Windows path: use local WinAddrInfo to bypass missing ws2_32.addrinfo.
+            const ws2 = struct {
+                extern "ws2_32" fn getaddrinfo(
+                    nodename: ?[*:0]const u8,
+                    servname: ?[*:0]const u8,
+                    hints: ?*const WinAddrInfo,
+                    res: *?*WinAddrInfo,
+                ) c_int;
+                extern "ws2_32" fn freeaddrinfo(ai: ?*WinAddrInfo) void;
+            };
 
-        if (res) |r| {
-            if (r.addr) |addr_ptr| {
-                if (r.family == posix.AF.INET) {
-                    const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr_ptr)));
-                    return .{ .in = addr_in.* };
-                } else if (r.family == posix.AF.INET6) {
-                    const addr_in6 = @as(*const posix.sockaddr.in6, @ptrCast(@alignCast(addr_ptr)));
-                    return .{ .in6 = addr_in6.* };
+            var hints = WinAddrInfo{
+                .flags = 0,
+                .family = @as(c_int, posix.AF.UNSPEC),
+                .socktype = @as(c_int, posix.SOCK.STREAM),
+                .protocol = @as(c_int, posix.IPPROTO.TCP),
+                .addrlen = 0,
+                .canonname = null,
+                .addr = null,
+                .next = null,
+            };
+            var res: ?*WinAddrInfo = null;
+            const rc = ws2.getaddrinfo(host_z, port_str, &hints, &res);
+            if (rc != 0) return error.UnknownHost;
+            defer if (res) |r| ws2.freeaddrinfo(r);
+
+            if (res) |r| {
+                if (r.addr) |addr_ptr| {
+                    if (r.family == @as(c_int, posix.AF.INET)) {
+                        const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr_ptr)));
+                        return .{ .in = addr_in.* };
+                    } else if (r.family == @as(c_int, posix.AF.INET6)) {
+                        const addr_in6 = @as(*const posix.sockaddr.in6, @ptrCast(@alignCast(addr_ptr)));
+                        return .{ .in6 = addr_in6.* };
+                    }
                 }
             }
+            return error.UnknownHost;
+        } else {
+            const c = std.c;
+            var hints: c.addrinfo = undefined;
+            @memset(@as([*]u8, @ptrCast(&hints))[0..@sizeOf(c.addrinfo)], 0);
+            hints.flags = std.mem.zeroes(@TypeOf(hints.flags));
+            hints.family = posix.AF.UNSPEC;
+            hints.socktype = posix.SOCK.STREAM;
+            hints.protocol = posix.IPPROTO.TCP;
+
+            var res: ?*c.addrinfo = null;
+            const rc = c.getaddrinfo(host_z, port_str, &hints, &res);
+            if (@intFromEnum(rc) != 0) {
+                return error.UnknownHost;
+            }
+            defer if (res) |r| c.freeaddrinfo(r);
+
+            if (res) |r| {
+                if (r.addr) |addr_ptr| {
+                    if (r.family == posix.AF.INET) {
+                        const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr_ptr)));
+                        return .{ .in = addr_in.* };
+                    } else if (r.family == posix.AF.INET6) {
+                        const addr_in6 = @as(*const posix.sockaddr.in6, @ptrCast(@alignCast(addr_ptr)));
+                        return .{ .in6 = addr_in6.* };
+                    }
+                }
+            }
+            return error.UnknownHost;
         }
-        return error.UnknownHost;
     }
 
     pub fn getOsSockLen(self: Address) posix.socklen_t {

@@ -54,7 +54,7 @@ pub const UdpForwarder = struct {
 
         const session = try self.ensureSession(udp_msg.stream_id, udp_msg.source_addr, udp_msg.source_port, now);
 
-        _ = posix.send(session.socket_fd, udp_msg.data, 0) catch |err| {
+        _ = posix.send(common.toSocket(session.socket_fd), udp_msg.data, 0) catch |err| {
             std.debug.print("[UDP-SERVER] send error for stream {}: {}\n", .{ udp_msg.stream_id, err });
             return err;
         };
@@ -116,9 +116,9 @@ pub const UdpForwarder = struct {
         }
         self.sessions_mutex.unlock();
 
-        const fd = try posix.socket(self.target_addr.any.family, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
+        const fd = try common.createSocket(self.target_addr.any.family, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
         errdefer posix.close(fd);
-        try posix.connect(fd, &self.target_addr.any, self.target_addr.getOsSockLen());
+        try common.connectSocket(fd, &self.target_addr.any, self.target_addr.getOsSockLen());
 
         const session = try self.allocator.create(Session);
         session.* = .{
@@ -146,7 +146,7 @@ pub const UdpForwarder = struct {
         self.sessions.put(stream_id, session) catch |err| {
             self.sessions_mutex.unlock();
             session.running.store(false, .release);
-            posix.shutdown(session.socket_fd, .recv) catch {};
+            posix.shutdown(common.toSocket(session.socket_fd), .recv) catch {};
             session.thread.join();
             posix.close(session.socket_fd);
             self.allocator.destroy(session);
@@ -162,7 +162,7 @@ pub const UdpForwarder = struct {
         const forwarder = session.forwarder;
 
         while (session.running.load(.acquire) and forwarder.running.load(.acquire)) {
-            const n = posix.recv(session.socket_fd, &buf, 0) catch |err| {
+            const n = posix.recv(common.toSocket(session.socket_fd), &buf, 0) catch |err| {
                 if (err == error.Interrupted) continue;
                 break;
             };
@@ -230,7 +230,7 @@ pub const UdpForwarder = struct {
         if (entry) |removed| {
             const session = removed.value;
             session.running.store(false, .release);
-            posix.shutdown(session.socket_fd, .recv) catch {};
+            posix.shutdown(common.toSocket(session.socket_fd), .recv) catch {};
             if (!caller_is_thread) {
                 session.thread.join();
             }

@@ -36,7 +36,7 @@ pub const UdpForwarder = struct {
     ) !*UdpForwarder {
         // Resolve and bind local UDP socket
         const bind_addr = try resolveHostPort(local_host, local_port);
-        const local_fd = try posix.socket(
+        const local_fd = try common.createSocket(
             bind_addr.any.family,
             posix.SOCK.DGRAM | posix.SOCK.CLOEXEC,
             0,
@@ -44,7 +44,7 @@ pub const UdpForwarder = struct {
         errdefer posix.close(local_fd);
 
         // Bind to local host/port
-        try posix.bind(local_fd, &bind_addr.any, bind_addr.getOsSockLen());
+        try common.bindSocket(local_fd, &bind_addr.any, bind_addr.getOsSockLen());
 
         const forwarder = try allocator.create(UdpForwarder);
         forwarder.* = .{
@@ -80,7 +80,7 @@ pub const UdpForwarder = struct {
         while (self.running.load(.acquire)) {
             // Receive UDP packet from local client
             const n = posix.recvfrom(
-                self.local_fd,
+                common.toSocket(self.local_fd),
                 &buf,
                 0,
                 @ptrCast(&from_addr),
@@ -163,7 +163,7 @@ pub const UdpForwarder = struct {
 
         // Send back to local source address
         _ = try posix.sendto(
-            self.local_fd,
+            common.toSocket(self.local_fd),
             udp_msg.data,
             0,
             &session.source_addr.any,
@@ -187,7 +187,7 @@ pub const UdpForwarder = struct {
     pub fn stop(self: *UdpForwarder) void {
         self.running.store(false, .release);
         // Shutdown socket to unblock recvfrom()
-        posix.shutdown(self.local_fd, .recv) catch {};
+        posix.shutdown(common.toSocket(self.local_fd), .recv) catch {};
         self.thread.join();
     }
 
