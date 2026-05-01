@@ -80,7 +80,7 @@ pub const UdpSessionManager = struct {
     sessions: std.AutoHashMap(SessionKey, UdpSession),
     // Reverse map: stream_id -> SessionKey (for tunnel -> local forwarding)
     reverse_map: std.AutoHashMap(tunnel.StreamId, SessionKey),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     next_stream_id: std.atomic.Value(u32),
     scratch_keys: std.ArrayListUnmanaged(SessionKey),
 
@@ -89,9 +89,9 @@ pub const UdpSessionManager = struct {
             .allocator = allocator,
             .sessions = std.AutoHashMap(SessionKey, UdpSession).init(allocator),
             .reverse_map = std.AutoHashMap(tunnel.StreamId, SessionKey).init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .mutex = std.Io.Mutex.init,
             .next_stream_id = std.atomic.Value(u32).init(1),
-            .scratch_keys = .{},
+            .scratch_keys = .empty,
         };
     }
 
@@ -103,8 +103,8 @@ pub const UdpSessionManager = struct {
 
     /// Get or create session for a source address
     pub fn getOrCreate(self: *UdpSessionManager, source_addr: net.Address) !UdpSession {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
 
         const key = SessionKey.initFromAddress(source_addr);
 
@@ -128,8 +128,8 @@ pub const UdpSessionManager = struct {
 
     /// Look up session by stream_id (for reverse lookup)
     pub fn getByStreamId(self: *UdpSessionManager, stream_id: tunnel.StreamId) ?UdpSession {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
 
         const key = self.reverse_map.get(stream_id) orelse return null;
         return self.sessions.get(key);
@@ -137,8 +137,8 @@ pub const UdpSessionManager = struct {
 
     /// Remove expired sessions
     pub fn cleanupExpired(self: *UdpSessionManager, timeout_seconds: u64) !usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
 
         self.scratch_keys.clearRetainingCapacity();
 
@@ -161,8 +161,8 @@ pub const UdpSessionManager = struct {
 
     /// Count active sessions
     pub fn count(self: *UdpSessionManager) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
         return self.sessions.count();
     }
 };

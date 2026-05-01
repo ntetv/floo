@@ -17,7 +17,7 @@ pub const UdpForwarder = struct {
     running: std.atomic.Value(bool),
     timeout_ns: i64,
     sessions: std.AutoHashMap(tunnel.StreamId, *Session),
-    sessions_mutex: std.Thread.Mutex,
+    sessions_mutex: std.Io.Mutex,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -39,7 +39,7 @@ pub const UdpForwarder = struct {
             .running = std.atomic.Value(bool).init(true),
             .timeout_ns = @as(i64, @intCast(timeout_seconds * std.time.ns_per_s)),
             .sessions = std.AutoHashMap(tunnel.StreamId, *Session).init(allocator),
-            .sessions_mutex = .{},
+            .sessions_mutex = std.Io.Mutex.init,
         };
         return forwarder;
     }
@@ -54,7 +54,7 @@ pub const UdpForwarder = struct {
 
         const session = try self.ensureSession(udp_msg.stream_id, udp_msg.source_addr, udp_msg.source_port, now);
 
-        _ = posix.send(common.toSocket(session.socket_fd), udp_msg.data, 0) catch |err| {
+        _ = common.sendCompat(session.socket_fd, udp_msg.data) catch |err| {
             std.debug.print("[UDP-SERVER] send error for stream {}: {}\n", .{ udp_msg.stream_id, err });
             return err;
         };
@@ -63,15 +63,15 @@ pub const UdpForwarder = struct {
 
     pub fn stop(self: *UdpForwarder) void {
         self.running.store(false, .release);
-        var to_close = std.ArrayListUnmanaged(tunnel.StreamId){};
+        var to_close = std.ArrayListUnmanaged(tunnel.StreamId).empty;
         defer to_close.deinit(self.allocator);
 
-        self.sessions_mutex.lock();
+        self.sessions_mutex.lock(std.Options.debug_io) catch unreachable;
         var iter = self.sessions.keyIterator();
         while (iter.next()) |key_ptr| {
             if (to_close.append(self.allocator, key_ptr.*)) |_| {} else |_| break;
         }
-        self.sessions_mutex.unlock();
+        self.sessions_mutex.unlock(std.Options.debug_io);
 
         for (to_close.items) |stream_id| {
             self.removeSession(stream_id, false);
@@ -103,9 +103,9 @@ pub const UdpForwarder = struct {
         source_port: u16,
         now: i64,
     ) !*Session {
-        self.sessions_mutex.lock();
+        self.sessions_mutex.lock(std.Options.debug_io) catch unreachable;
         if (self.sessions.get(stream_id)) |session| {
-            defer self.sessions_mutex.unlock();
+            defer self.sessions_mutex.unlock(std.Options.debug_io);
             if (session.source_addr_len != source_addr.len or
                 session.source_port != source_port or
                 !std.mem.eql(u8, session.source_addr[0..session.source_addr_len], source_addr))
@@ -114,10 +114,10 @@ pub const UdpForwarder = struct {
             }
             return session;
         }
-        self.sessions_mutex.unlock();
+        self.sessions_mutex.unlock(std.Options.debug_io);
 
-        const fd = try common.createSocket(self.target_addr.any.family, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
-        errdefer posix.close(fd);
+        const fd = try common.createSocket(self.target_addr.any.family, posix.SOCK.DGRAM | common.SOCK_CLOEXEC, 0);
+        errdefer common.closeFd(fd);
         try common.connectSocket(fd, &self.target_addr.any, self.target_addr.getOsSockLen());
 
         const session = try self.allocator.create(Session);
@@ -137,22 +137,22 @@ pub const UdpForwarder = struct {
         session.thread = std.Thread.spawn(.{
             .stack_size = common.DEFAULT_THREAD_STACK,
         }, sessionRecvThread, .{session}) catch |err| {
-            posix.close(fd);
+            common.closeFd(fd);
             self.allocator.destroy(session);
             return err;
         };
 
-        self.sessions_mutex.lock();
+        self.sessions_mutex.lock(std.Options.debug_io) catch unreachable;
         self.sessions.put(stream_id, session) catch |err| {
-            self.sessions_mutex.unlock();
+            self.sessions_mutex.unlock(std.Options.debug_io);
             session.running.store(false, .release);
-            posix.shutdown(common.toSocket(session.socket_fd), .recv) catch {};
+            common.shutdownSocket(session.socket_fd, .recv);
             session.thread.join();
-            posix.close(session.socket_fd);
+            common.closeFd(session.socket_fd);
             self.allocator.destroy(session);
             return err;
         };
-        self.sessions_mutex.unlock();
+        self.sessions_mutex.unlock(std.Options.debug_io);
 
         return session;
     }
@@ -162,7 +162,7 @@ pub const UdpForwarder = struct {
         const forwarder = session.forwarder;
 
         while (session.running.load(.acquire) and forwarder.running.load(.acquire)) {
-            const n = posix.recv(common.toSocket(session.socket_fd), &buf, 0) catch |err| {
+            const n = common.recvCompat(session.socket_fd, &buf) catch |err| {
                 if (err == error.Interrupted) continue;
                 break;
             };
@@ -196,12 +196,12 @@ pub const UdpForwarder = struct {
 
         // Workaround for Zig compiler bug in Debug mode on some platforms
         // Split into smaller parts to avoid genSetReg error
-        var expired_items = std.ArrayListUnmanaged(tunnel.StreamId){};
+        var expired_items = std.ArrayListUnmanaged(tunnel.StreamId).empty;
         defer expired_items.deinit(self.allocator);
 
         {
-            self.sessions_mutex.lock();
-            defer self.sessions_mutex.unlock();
+            self.sessions_mutex.lock(std.Options.debug_io) catch unreachable;
+            defer self.sessions_mutex.unlock(std.Options.debug_io);
 
             var iter = self.sessions.iterator();
             while (iter.next()) |entry| {
@@ -223,18 +223,18 @@ pub const UdpForwarder = struct {
     }
 
     fn removeSession(self: *UdpForwarder, stream_id: tunnel.StreamId, caller_is_thread: bool) void {
-        self.sessions_mutex.lock();
+        self.sessions_mutex.lock(std.Options.debug_io) catch unreachable;
         const entry = self.sessions.fetchRemove(stream_id);
-        self.sessions_mutex.unlock();
+        self.sessions_mutex.unlock(std.Options.debug_io);
 
         if (entry) |removed| {
             const session = removed.value;
             session.running.store(false, .release);
-            posix.shutdown(common.toSocket(session.socket_fd), .recv) catch {};
+            common.shutdownSocket(session.socket_fd, .recv);
             if (!caller_is_thread) {
                 session.thread.join();
             }
-            posix.close(session.socket_fd);
+            common.closeFd(session.socket_fd);
             self.allocator.destroy(session);
             std.debug.print("[UDP-SERVER] Session {} closed\n", .{stream_id});
         }

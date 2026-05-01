@@ -740,7 +740,7 @@ pub fn noiseXXHandshake(
     const X25519 = crypto.dh.X25519;
 
     // Generate ephemeral keypair (static keypair is provided)
-    const e_keypair = X25519.KeyPair.generate();
+    const e_keypair = X25519.KeyPair.generate(std.Options.debug_io);
     const s_keypair = static_keypair;
 
     // Initialize Noise state

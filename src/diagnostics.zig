@@ -46,14 +46,11 @@ fn asDecimalMB(bytes: u64) f64 {
 
 fn appendProfileLine(prefix: []const u8, total: u64, calls: u64, avg: u64) void {
     const path = "/tmp/floo_profile.log";
-    _ = std.fs.createFileAbsolute(path, .{ .truncate = false, .read = false }) catch {};
+    var file = std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = false, .read = false }) catch return;
+    defer file.close(std.Options.debug_io);
 
-    var file = std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch return;
-    defer file.close();
-
-    _ = file.seekFromEnd(0) catch {};
-
+    const offset = file.stat(std.Options.debug_io) catch return;
     var buf: [128]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{s}\ttotal_ns={}\tcalls={}\tavg_ns={}\n", .{ prefix, total, calls, avg }) catch return;
-    file.writeAll(line) catch {};
+    file.writePositionalAll(std.Options.debug_io, line, offset.size) catch {};
 }

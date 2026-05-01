@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     server.root_module.addOptions("build_options", build_options);
-    server.root_module.strip = true;
+    server.root_module.strip = optimize != .Debug;
     b.installArtifact(server);
 
     // Client executable: flooc
@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     client.root_module.addOptions("build_options", build_options);
-    client.root_module.strip = true;
+    client.root_module.strip = optimize != .Debug;
     b.installArtifact(client);
 
     // Run server
@@ -162,48 +162,29 @@ pub fn build(b: *std.Build) void {
     const release_cpu_option = b.option([]const u8, "release_cpu", "Override CPU model for release-all targets (e.g. haswell, znver3, baseline, native)");
 
     const release_targets = [_]ReleaseTarget{
-        .{ .name = "x86_64-linux-gnu", .query = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-            .abi = .gnu,
-        } },
-        .{ .name = "x86_64-linux-gnu-haswell", .query = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-            .abi = .gnu,
-        }, .cpu = "haswell" },
         .{ .name = "x86_64-linux-musl", .query = .{
             .cpu_arch = .x86_64,
             .os_tag = .linux,
             .abi = .musl,
         } },
-        .{ .name = "aarch64-linux-gnu", .query = .{
+        .{ .name = "aarch64-linux-musl", .query = .{
             .cpu_arch = .aarch64,
             .os_tag = .linux,
-            .abi = .gnu,
+            .abi = .musl,
         } },
-        .{ .name = "aarch64-linux-gnu-neoverse-n1", .query = .{
-            .cpu_arch = .aarch64,
-            .os_tag = .linux,
-            .abi = .gnu,
-        }, .cpu = "neoverse_n1" },
-        .{ .name = "aarch64-linux-gnu-rpi4", .query = .{
-            .cpu_arch = .aarch64,
-            .os_tag = .linux,
-            .abi = .gnu,
-        }, .cpu = "cortex_a72" },
-        .{ .name = "x86_64-macos", .query = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .macos,
-        } },
-        .{ .name = "x86_64-macos-haswell", .query = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .macos,
-        }, .cpu = "haswell" },
         .{ .name = "aarch64-macos-m1", .query = .{
             .cpu_arch = .aarch64,
             .os_tag = .macos,
         }, .cpu = "apple_m1" },
+        .{ .name = "x86_64-macos", .query = .{
+            .cpu_arch = .x86_64,
+            .os_tag = .macos,
+        } },
+        .{ .name = "x86_64-windows", .query = .{
+            .cpu_arch = .x86_64,
+            .os_tag = .windows,
+            .abi = .gnu,
+        } },
     };
 
     const release_step = b.step("release-all", "Build release binaries for common platforms");

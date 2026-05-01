@@ -2,11 +2,27 @@
 
 All notable changes to Floo will be documented in this file.
 
+## [0.1.6] - 2026-05-01
+
+### Added
+- Added dedicated 5-platform release packaging for x86_64 Linux musl, aarch64 Linux musl, aarch64 macOS, x86_64 macOS, and x86_64 Windows.
+- Added hot spare tunnel promotion so a pre-connected spare can take over when an active tunnel drops.
+
+### Changed
+- Upgraded the project to Zig 0.16.0 stable for current builds and release packaging, including Windows builds.
+- Reworked reverse listener failover to rebind listeners to a healthy tunnel instead of recreating them on every reconnect.
+- Consolidated Windows socket, poll, sleep, and socket-option compatibility in the shared networking layer.
+
+### Fixed
+- Fixed reverse tunnel instability triggered by multi-tunnel reconnect and listener rebinding races.
+- Fixed Windows x86_64 cross-compilation issues under Zig 0.16.0.
+- Fixed noisy disconnect handling for expected tunnel reset/failover paths.
+
 ## [0.1.5] - 2025-11-19
 
 ### Changed
-- Migrated to Zig master branch (0.16.0-dev) for latest performance improvements.
-- Updated CI/CD workflows to support Zig master.
+- Upgraded the project to Zig 0.16.0 stable for current builds and release packaging.
+- Updated CI/CD workflows to support Zig 0.16.0.
 - Fixed Linux compilation issues regarding `sigset_t` initialization.
 
 ### Performance

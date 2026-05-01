@@ -55,6 +55,7 @@ pub const AdvancedSettings = struct {
 
     // Client-specific
     num_tunnels: usize = 0, // 0 = auto (parallel connections)
+    hot_spare: bool = true, // maintain 1 extra pre-connected tunnel for instant failover
     reconnect_enabled: bool = true,
     reconnect_initial_delay_ms: u64 = 1000,
     reconnect_max_delay_ms: u64 = 30000,
@@ -62,6 +63,39 @@ pub const AdvancedSettings = struct {
 
     // Proxy support (client-only)
     proxy_url: []const u8 = "",
+
+    /// Apply a built-in performance mode preset.
+    /// mode=1: low-concurrency (NAT traversal, SSH, RDP)
+    /// mode=2: high-concurrency (multi-user proxy, video streaming)
+    /// Values in [advanced] section parsed after mode= will override these presets.
+    pub fn applyMode(self: *AdvancedSettings, mode: u8) void {
+        switch (mode) {
+            0 => {}, // custom mode: no change
+            1 => {
+                // Low-concurrency: prioritize low latency and NAT keepalive
+                self.socket_buffer_size         = 4 * 1024 * 1024; // 4MB
+                self.io_batch_bytes             = 64 * 1024;        // 64KB
+                self.heartbeat_interval_seconds = 10;
+                self.heartbeat_timeout_seconds  = 15;
+                self.tcp_keepalive_idle         = 30;
+                self.reconnect_initial_delay_ms = 500;
+                self.reconnect_max_delay_ms     = 10000;
+                std.debug.print("[CONFIG] Mode 1: low-concurrency (NAT/SSH/RDP)\n", .{});
+            },
+            2 => {
+                // High-concurrency: prioritize throughput and HOL isolation
+                self.socket_buffer_size         = 16 * 1024 * 1024; // 16MB (BBR optimized)
+                self.io_batch_bytes             = 256 * 1024;        // 256KB
+                self.heartbeat_interval_seconds = 30;
+                self.heartbeat_timeout_seconds  = 40;
+                self.tcp_keepalive_idle         = 60;
+                self.reconnect_initial_delay_ms = 500;
+                self.reconnect_max_delay_ms     = 30000;
+                std.debug.print("[CONFIG] Mode 2: high-concurrency (proxy/video/multi-user)\n", .{});
+            },
+            else => std.debug.print("[CONFIG] Warning: unknown mode={d}, ignored\n", .{mode}),
+        }
+    }
 };
 
 // Server configuration - simplified
@@ -174,7 +208,7 @@ pub const ServerConfig = struct {
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !ServerConfig {
-        const content = std.fs.cwd().readFileAlloc(path, allocator, @enumFromInt(1024 * 1024)) catch |err| {
+        const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 std.debug.print("[CONFIG] File not found: {s}. Create it using examples/ templates.\n", .{path});
                 var cfg = try ServerConfig.init(allocator);
@@ -256,6 +290,9 @@ pub const ServerConfig = struct {
                     } else if (std.mem.eql(u8, key, "token")) {
                         allocator.free(config.token);
                         config.token = try dupString(allocator, value);
+                    } else if (std.mem.eql(u8, key, "mode")) {
+                        const m = std.fmt.parseInt(u8, value, 10) catch 0;
+                        config.advanced.applyMode(m);
                     }
                 },
 
@@ -453,7 +490,7 @@ pub const ClientConfig = struct {
 
         // Validate num_tunnels
         if (self.advanced.num_tunnels == 0) {
-            std.debug.print("[CONFIG] Info: num_tunnels=0 → auto scale based on CPU count\n", .{});
+            std.debug.print("[CONFIG] Info: num_tunnels=0 → auto scale based on CPU count (min 4, max 64)\n", .{});
         } else {
             if (self.advanced.num_tunnels > 64) {
                 std.debug.print("[CONFIG] Warning: num_tunnels > 64 may cause excessive overhead\n", .{});
@@ -483,7 +520,7 @@ pub const ClientConfig = struct {
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !ClientConfig {
-        const content = std.fs.cwd().readFileAlloc(path, allocator, @enumFromInt(1024 * 1024)) catch |err| {
+        const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 std.debug.print("[CONFIG] File not found: {s}. Create it using examples/ templates.\n", .{path});
                 var cfg = try ClientConfig.init(allocator);
@@ -568,6 +605,9 @@ pub const ClientConfig = struct {
                             allocator.free(ds);
                         }
                         config.default_service = try dupString(allocator, value);
+                    } else if (std.mem.eql(u8, key, "mode")) {
+                        const m = std.fmt.parseInt(u8, value, 10) catch 0;
+                        config.advanced.applyMode(m);
                     }
                 },
 
@@ -640,6 +680,8 @@ pub const ClientConfig = struct {
                         config.advanced.heartbeat_timeout_seconds = std.fmt.parseInt(u32, value, 10) catch config.advanced.heartbeat_timeout_seconds;
                     } else if (std.mem.eql(u8, key, "num_tunnels")) {
                         config.advanced.num_tunnels = std.fmt.parseInt(usize, value, 10) catch config.advanced.num_tunnels;
+                    } else if (std.mem.eql(u8, key, "hot_spare")) {
+                        config.advanced.hot_spare = std.mem.eql(u8, value, "true");
                     } else if (std.mem.eql(u8, key, "reconnect_enabled")) {
                         config.advanced.reconnect_enabled = std.mem.eql(u8, value, "true");
                     } else if (std.mem.eql(u8, key, "reconnect_initial_delay_ms")) {

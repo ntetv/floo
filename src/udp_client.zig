@@ -38,10 +38,10 @@ pub const UdpForwarder = struct {
         const bind_addr = try resolveHostPort(local_host, local_port);
         const local_fd = try common.createSocket(
             bind_addr.any.family,
-            posix.SOCK.DGRAM | posix.SOCK.CLOEXEC,
+            posix.SOCK.DGRAM | common.SOCK_CLOEXEC,
             0,
         );
-        errdefer posix.close(local_fd);
+        errdefer common.closeFd(local_fd);
 
         // Bind to local host/port
         try common.bindSocket(local_fd, &bind_addr.any, bind_addr.getOsSockLen());
@@ -79,13 +79,7 @@ pub const UdpForwarder = struct {
 
         while (self.running.load(.acquire)) {
             // Receive UDP packet from local client
-            const n = posix.recvfrom(
-                common.toSocket(self.local_fd),
-                &buf,
-                0,
-                @ptrCast(&from_addr),
-                &from_len,
-            ) catch |err| {
+            const n = common.recvFromCompat(self.local_fd, &buf, @ptrCast(&from_addr), &from_len) catch |err| {
                 std.debug.print("[UDP-CLIENT] recvfrom error: {}\n", .{err});
                 continue;
             };
@@ -162,10 +156,9 @@ pub const UdpForwarder = struct {
         };
 
         // Send back to local source address
-        _ = try posix.sendto(
-            common.toSocket(self.local_fd),
+        _ = try common.sendToCompat(
+            self.local_fd,
             udp_msg.data,
-            0,
             &session.source_addr.any,
             session.source_addr.getOsSockLen(),
         );
@@ -187,12 +180,12 @@ pub const UdpForwarder = struct {
     pub fn stop(self: *UdpForwarder) void {
         self.running.store(false, .release);
         // Shutdown socket to unblock recvfrom()
-        posix.shutdown(common.toSocket(self.local_fd), .recv) catch {};
+        common.shutdownSocket(self.local_fd, .recv);
         self.thread.join();
     }
 
     pub fn destroy(self: *UdpForwarder) void {
-        posix.close(self.local_fd);
+        common.closeFd(self.local_fd);
         self.session_manager.deinit();
         self.allocator.destroy(self);
     }

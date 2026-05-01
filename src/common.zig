@@ -4,10 +4,54 @@ const posix = std.posix;
 const config = @import("config.zig");
 const net = @import("net_compat.zig");
 
+const win_sock = if (builtin.target.os.tag == .windows) struct {
+    const Socket = usize;
+    const INVALID_SOCKET: Socket = ~@as(usize, 0);
+    const SOCKET_ERROR: c_int = -1;
+
+    const WSAEINTR = 10004;
+    const WSAEWOULDBLOCK = 10035;
+    const WSAEADDRNOTAVAIL = 10049;
+    const WSAENETDOWN = 10050;
+    const WSAENETUNREACH = 10051;
+    const WSAECONNABORTED = 10053;
+    const WSAECONNRESET = 10054;
+    const WSAECONNREFUSED = 10061;
+    const WSAEACCES = 10013;
+    const WSAEADDRINUSE = 10048;
+    const WSAETIMEDOUT = 10060;
+    const WSAESHUTDOWN = 10058;
+    const POLLIN = 0x0300;
+    const POLLERR = 0x0001;
+    const POLLHUP = 0x0002;
+    const POLLNVAL = 0x0004;
+
+    pub const PollFd = extern struct {
+        fd: Socket,
+        events: i16,
+        revents: i16,
+    };
+
+    extern "ws2_32" fn WSAStartup(wVersionRequested: u16, lpWSAData: *anyopaque) callconv(.winapi) c_int;
+    extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
+    extern "ws2_32" fn socket(af: c_int, sock_type: c_int, protocol: c_int) callconv(.winapi) Socket;
+    extern "ws2_32" fn closesocket(s: Socket) callconv(.winapi) c_int;
+    extern "ws2_32" fn bind(s: Socket, name: *const anyopaque, namelen: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn listen(s: Socket, backlog: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn connect(s: Socket, name: *const anyopaque, namelen: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn accept(s: Socket, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.winapi) Socket;
+    extern "ws2_32" fn setsockopt(s: Socket, level: c_int, optname: c_int, optval: [*]const u8, optlen: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn send(s: Socket, buf: [*]const u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn recv(s: Socket, buf: [*]u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn sendto(s: Socket, buf: [*]const u8, len: c_int, flags: c_int, to: *const anyopaque, tolen: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn recvfrom(s: Socket, buf: [*]u8, len: c_int, flags: c_int, from: ?*anyopaque, fromlen: ?*c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn shutdown(s: Socket, how: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn WSAPoll(fdarray: [*]@This().PollFd, nfds: u32, timeout: c_int) callconv(.winapi) c_int;
+} else struct {};
+
 pub fn nanoTimestamp() i128 {
     if (builtin.target.os.tag == .windows) {
-        // std.time.nanoTimestamp() doesn't exist in this Zig nightly.
-        // Use ntdll RtlQueryPerformanceCounter/Frequency (already in Zig stdlib).
+        // Use ntdll RtlQueryPerformanceCounter/Frequency on Windows.
         const ntdll = std.os.windows.ntdll;
         var freq: std.os.windows.LARGE_INTEGER = 1;
         var counter: std.os.windows.LARGE_INTEGER = 0;
@@ -16,7 +60,9 @@ pub fn nanoTimestamp() i128 {
         if (freq == 0) return 0;
         return @divTrunc(@as(i128, counter) * std.time.ns_per_s, @as(i128, freq));
     }
-    const ts = posix.clock_gettime(posix.CLOCK.MONOTONIC) catch return 0;
+
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts) != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
@@ -33,92 +79,188 @@ else
 
 /// Convert posix.fd_t to posix.socket_t for socket API calls.
 /// On Windows, HANDLE (*anyopaque) and SOCKET (*opaque{}) are distinct pointer types.
-pub inline fn toSocket(fd: posix.fd_t) posix.socket_t {
+pub inline fn toSocket(fd: posix.fd_t) if (builtin.target.os.tag == .windows) win_sock.Socket else posix.socket_t {
     if (builtin.target.os.tag == .windows) {
-        return @ptrCast(fd);
+        return @intFromPtr(fd);
     }
     return fd;
 }
 
-inline fn socketHandle(fd: posix.fd_t) posix.socket_t {
+inline fn socketHandle(fd: posix.fd_t) if (builtin.target.os.tag == .windows) win_sock.Socket else posix.socket_t {
     return toSocket(fd);
 }
 
+pub const PollFd = if (builtin.target.os.tag == .windows) win_sock.PollFd else posix.pollfd;
+pub const POLL_IN: i16 = if (builtin.target.os.tag == .windows) win_sock.POLLIN else posix.POLL.IN;
+pub const POLL_ERR: i16 = if (builtin.target.os.tag == .windows) win_sock.POLLERR else posix.POLL.ERR;
+pub const POLL_HUP: i16 = if (builtin.target.os.tag == .windows) win_sock.POLLHUP else posix.POLL.HUP;
+pub const POLL_NVAL: i16 = if (builtin.target.os.tag == .windows) win_sock.POLLNVAL else if (@hasDecl(posix.POLL, "NVAL")) posix.POLL.NVAL else 0;
+
+pub fn pollCompat(fds: []PollFd, timeout_ms: i32) !usize {
+    if (builtin.target.os.tag == .windows) {
+        const rc = win_sock.WSAPoll(fds.ptr, @intCast(fds.len), timeout_ms);
+        if (rc >= 0) return @intCast(rc);
+        return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEINTR => error.SignalInterrupt,
+            else => error.Unexpected,
+        };
+    }
+    return posix.poll(fds, timeout_ms);
+}
+
+/// Cross-platform fd close.
+pub inline fn closeFd(fd: posix.fd_t) void {
+    if (builtin.target.os.tag == .windows) {
+        _ = win_sock.closesocket(toSocket(fd));
+    } else {
+        _ = posix.system.close(fd);
+    }
+}
+
+/// Cross-platform pipe2.
+pub fn pipe2Compat(flags: posix.O) ![2]posix.fd_t {
+    if (builtin.target.os.tag == .windows) {
+        return posix.pipe2(flags);
+    }
+
+    var fds: [2]posix.fd_t = undefined;
+    if (std.c.pipe(&fds) != 0) {
+        return error.SystemResources;
+    }
+
+    if (flags.CLOEXEC) {
+        _ = posix.system.fcntl(fds[0], posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
+        _ = posix.system.fcntl(fds[1], posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
+    }
+    if (flags.NONBLOCK) {
+        const r0 = posix.system.fcntl(fds[0], posix.F.GETFL, @as(c_int, 0));
+        const r1 = posix.system.fcntl(fds[1], posix.F.GETFL, @as(c_int, 0));
+        const nonblock_flag: c_int = @bitCast(std.c.O{ .NONBLOCK = true });
+        _ = posix.system.fcntl(fds[0], posix.F.SETFL, r0 | nonblock_flag);
+        _ = posix.system.fcntl(fds[1], posix.F.SETFL, r1 | nonblock_flag);
+    }
+    return fds;
+}
+
+pub const SOCK_CLOEXEC: u32 = if (builtin.target.os.tag == .windows or !@hasDecl(posix.SOCK, "CLOEXEC")) 0 else @field(posix.SOCK, "CLOEXEC");
+pub const SOCK_NONBLOCK: u32 = if (builtin.target.os.tag == .windows or !@hasDecl(posix.SOCK, "NONBLOCK")) 0 else @field(posix.SOCK, "NONBLOCK");
+
 /// Cross-platform socket creation.
-/// posix.socket() is broken for Windows in this Zig nightly (stdlib type mismatch bug).
 pub fn createSocket(family: u32, sock_type: u32, protocol: u32) !posix.fd_t {
     if (builtin.target.os.tag == .windows) {
-        const ws2 = std.os.windows.ws2_32;
-        const filtered = sock_type & ~@as(u32, posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK);
-        const sock = ws2.socket(@intCast(family), @intCast(filtered), @intCast(protocol));
-        if (sock == ws2.INVALID_SOCKET) return error.SystemResources;
-        return @ptrCast(sock);
+        const filtered = sock_type & ~@as(u32, SOCK_CLOEXEC | SOCK_NONBLOCK);
+        const sock = win_sock.socket(@intCast(family), @intCast(filtered), @intCast(protocol));
+        if (sock == win_sock.INVALID_SOCKET) return error.SystemResources;
+        return @ptrFromInt(sock);
     }
-    return posix.socket(family, sock_type, protocol);
+
+    const want_cloexec = (sock_type & SOCK_CLOEXEC) != 0;
+    const want_nonblock = (sock_type & SOCK_NONBLOCK) != 0;
+    const filtered = sock_type & ~@as(u32, SOCK_CLOEXEC | SOCK_NONBLOCK);
+
+    const rc = posix.system.socket(family, filtered, protocol);
+    switch (posix.errno(rc)) {
+        .SUCCESS => {
+            const fd: posix.fd_t = @intCast(rc);
+            if (want_cloexec) setCloseOnExec(fd);
+            if (want_nonblock and builtin.target.os.tag != .windows) {
+                const current = posix.system.fcntl(fd, posix.F.GETFL, @as(c_int, 0));
+                const nonblock_flag: c_int = @bitCast(std.c.O{ .NONBLOCK = true });
+                _ = posix.system.fcntl(fd, posix.F.SETFL, current | nonblock_flag);
+            }
+            return fd;
+        },
+        .AFNOSUPPORT => return error.AddressFamilyNotSupported,
+        .PROTONOSUPPORT, .NOPROTOOPT => return error.ProtocolNotSupported,
+        .MFILE => return error.ProcessFdQuotaExceeded,
+        .NFILE => return error.SystemFdQuotaExceeded,
+        .NOBUFS, .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    }
 }
 
 /// Cross-platform bind.
-/// posix.bind() throws @compileError("use std.Io instead") on Windows in this nightly.
 pub fn bindSocket(fd: posix.fd_t, addr: *const posix.sockaddr, addrlen: posix.socklen_t) !void {
     if (builtin.target.os.tag == .windows) {
-        const ws2 = std.os.windows.ws2_32;
-        const rc = ws2.bind(toSocket(fd), @ptrCast(addr), @intCast(addrlen));
-        if (rc != 0) return switch (ws2.WSAGetLastError()) {
-            .EADDRINUSE => error.AddressInUse,
-            .EADDRNOTAVAIL => error.AddressNotAvailable,
-            .EACCES => error.AccessDenied,
+        const rc = win_sock.bind(toSocket(fd), @ptrCast(addr), @intCast(addrlen));
+        if (rc != 0) return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEADDRINUSE => error.AddressInUse,
+            win_sock.WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+            win_sock.WSAEACCES => error.AccessDenied,
             else => error.Unexpected,
         };
     } else {
-        try posix.bind(fd, addr, addrlen);
+        switch (posix.errno(posix.system.bind(fd, addr, addrlen))) {
+            .SUCCESS => return,
+            .ACCES => return error.AccessDenied,
+            .ADDRINUSE => return error.AddressInUse,
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            else => |err| return posix.unexpectedErrno(err),
+        }
     }
 }
 
 /// Cross-platform listen.
-/// posix.listen() throws @compileError on Windows in this nightly.
 pub fn listenSocket(fd: posix.fd_t, backlog: u31) !void {
     if (builtin.target.os.tag == .windows) {
-        const ws2 = std.os.windows.ws2_32;
-        const rc = ws2.listen(toSocket(fd), @intCast(backlog));
+        const rc = win_sock.listen(toSocket(fd), @intCast(backlog));
         if (rc != 0) return error.Unexpected;
     } else {
-        try posix.listen(fd, backlog);
+        switch (posix.errno(posix.system.listen(fd, backlog))) {
+            .SUCCESS => return,
+            .ADDRINUSE => return error.AddressInUse,
+            else => |err| return posix.unexpectedErrno(err),
+        }
     }
 }
 
 /// Cross-platform connect.
-/// posix.connect() throws @compileError on Windows in this nightly.
 pub fn connectSocket(fd: posix.fd_t, addr: *const posix.sockaddr, addrlen: posix.socklen_t) !void {
     if (builtin.target.os.tag == .windows) {
-        const ws2 = std.os.windows.ws2_32;
-        const rc = ws2.connect(toSocket(fd), @ptrCast(addr), @intCast(addrlen));
-        if (rc != 0) return switch (ws2.WSAGetLastError()) {
-            .ECONNREFUSED => error.ConnectionRefused,
-            .ENETUNREACH => error.NetworkUnreachable,
-            .ETIMEDOUT => error.ConnectionTimedOut,
+        const rc = win_sock.connect(toSocket(fd), @ptrCast(addr), @intCast(addrlen));
+        if (rc != 0) return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAECONNREFUSED => error.ConnectionRefused,
+            win_sock.WSAENETUNREACH => error.NetworkUnreachable,
+            win_sock.WSAETIMEDOUT => error.ConnectionTimedOut,
             else => error.ConnectionRefused,
         };
     } else {
-        try posix.connect(fd, addr, addrlen);
+        switch (posix.errno(posix.system.connect(fd, addr, addrlen))) {
+            .SUCCESS => return,
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .CONNREFUSED => return error.ConnectionRefused,
+            .HOSTUNREACH => return error.HostUnreachable,
+            .NETUNREACH => return error.NetworkUnreachable,
+            .TIMEDOUT => return error.ConnectionTimedOut,
+            else => |err| return posix.unexpectedErrno(err),
+        }
     }
 }
 
 /// Cross-platform accept.
-/// posix.accept() throws @compileError on Windows in this nightly.
 pub fn acceptSocket(fd: posix.fd_t, addr: ?*posix.sockaddr, addr_size: ?*posix.socklen_t, flags: u32) !posix.fd_t {
     if (builtin.target.os.tag == .windows) {
-        const ws2 = std.os.windows.ws2_32;
-        var addrlen_i32: i32 = if (addr_size) |s| @intCast(s.*) else 0;
-        const new_sock = ws2.accept(
+        _ = flags;
+        var addrlen_i32: c_int = if (addr_size) |s| @intCast(s.*) else 0;
+        const new_sock = win_sock.accept(
             toSocket(fd),
             if (addr) |a| @ptrCast(a) else null,
             if (addr_size != null) &addrlen_i32 else null,
         );
-        if (new_sock == ws2.INVALID_SOCKET) return error.ConnectionAborted;
+        if (new_sock == win_sock.INVALID_SOCKET) return error.ConnectionAborted;
         if (addr_size) |s| s.* = @intCast(addrlen_i32);
-        return @ptrCast(new_sock);
+        return @ptrFromInt(new_sock);
     } else {
-        return posix.accept(fd, addr, addr_size, flags);
+        _ = flags;
+        var storage: posix.sockaddr = undefined;
+        var storage_len: posix.socklen_t = @sizeOf(@TypeOf(storage));
+        const rc = posix.system.accept(fd, if (addr != null) addr.? else &storage, if (addr_size != null) addr_size.? else &storage_len);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .CONNABORTED => return error.ConnectionAborted,
+            .AGAIN => return error.WouldBlock,
+            else => |err| return posix.unexpectedErrno(err),
+        }
     }
 }
 
@@ -128,8 +270,9 @@ pub fn acceptSocket(fd: posix.fd_t, addr: ?*posix.sockaddr, addr_size: ?*posix.s
 
 /// Maximum number of pending connections in listen queue.
 /// This controls how many connections can wait before accept() is called.
-/// Linux default is 128, which works well for most use cases.
-pub const LISTEN_BACKLOG: u32 = 128;
+/// Set to 4096 to support high-concurrency SOCKS5/proxy scenarios.
+/// Effective value = min(LISTEN_BACKLOG, net.core.somaxconn).
+pub const LISTEN_BACKLOG: u32 = 4096;
 
 /// Standard buffer size for socket I/O operations (64KB).
 /// Optimal for most network conditions, matches typical TCP window size.
@@ -164,20 +307,24 @@ pub const CONTROL_MSG_BUFFER_SIZE: usize = 4096;
 /// On non-Windows platforms this is a no-op.
 pub fn initWinSock() void {
     if (builtin.target.os.tag != .windows) return;
-    const ws2 = std.os.windows.ws2_32;
-    var wsa_data: ws2.WSADATA = undefined;
-    _ = ws2.WSAStartup(0x0202, &wsa_data);
+    var wsa_data: [512]u8 = undefined;
+    _ = win_sock.WSAStartup(0x0202, &wsa_data);
 }
 
 /// Cross-platform sleep for a given number of nanoseconds.
-/// posix.nanosleep has a stdlib bug on Windows in dev.1484 (c_long vs isize).
-/// On Windows, uses kernel32 Sleep() with millisecond precision (minimum 1ms).
+/// On Windows, use `NtDelayExecution` for stable 0.16.0 compatibility.
 pub fn crossSleep(nanoseconds: u64) void {
     if (builtin.target.os.tag == .windows) {
-        const ms = @max(1, @as(u32, @truncate(nanoseconds / std.time.ns_per_ms)));
-        _ = std.os.windows.kernel32.SleepEx(ms, 0);
+        const ticks_100ns: i64 = @intCast(@divTrunc(nanoseconds, 100));
+        const delay_ticks: i64 = @max(1, ticks_100ns);
+        const delay_interval: std.os.windows.LARGE_INTEGER = -delay_ticks;
+        _ = std.os.windows.ntdll.NtDelayExecution(.FALSE, &delay_interval);
     } else {
-        posix.nanosleep(nanoseconds / std.time.ns_per_s, nanoseconds % std.time.ns_per_s);
+        const ts = std.c.timespec{
+            .sec = @intCast(nanoseconds / std.time.ns_per_s),
+            .nsec = @intCast(nanoseconds % std.time.ns_per_s),
+        };
+        _ = std.c.nanosleep(&ts, null);
     }
 }
 
@@ -217,6 +364,17 @@ pub fn constantTimeEqual(a: []const u8, b: []const u8) bool {
     return diff == 0 and a.len == b.len;
 }
 
+pub const SetSocketOptionError = error{Unexpected};
+
+pub fn setSocketOption(fd: posix.fd_t, level: i32, optname: u32, opt: []const u8) SetSocketOptionError!void {
+    if (builtin.target.os.tag == .windows) {
+        const rc = win_sock.setsockopt(toSocket(fd), level, @intCast(optname), opt.ptr, @intCast(opt.len));
+        if (rc != 0) return error.Unexpected;
+        return;
+    }
+    posix.setsockopt(toSocket(fd), level, optname, opt) catch return error.Unexpected;
+}
+
 pub const TcpOptions = struct {
     nodelay: bool,
     keepalive: bool,
@@ -238,10 +396,9 @@ pub fn tcpOptionsFromSettings(settings: *const config.TcpSettings) TcpOptions {
 
 /// Apply TCP socket options (Nagle/keepalive) with best-effort error reporting.
 pub fn applyTcpOptions(fd: posix.fd_t, opts: TcpOptions) void {
-    const sock = toSocket(fd);
     if (opts.nodelay) {
         const nodelay_value: c_int = 1;
-        posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(nodelay_value)) catch |err| {
+        setSocketOption(fd, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(nodelay_value)) catch |err| {
             std.debug.print("[TCP] Failed to set TCP_NODELAY: {}\n", .{err});
         };
     }
@@ -249,33 +406,137 @@ pub fn applyTcpOptions(fd: posix.fd_t, opts: TcpOptions) void {
     if (!opts.keepalive) return;
 
     const keepalive_value: c_int = 1;
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.KEEPALIVE, &std.mem.toBytes(keepalive_value)) catch |err| {
+    setSocketOption(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, &std.mem.toBytes(keepalive_value)) catch |err| {
         std.debug.print("[TCP] Failed to set SO_KEEPALIVE: {}\n", .{err});
     };
 
     if (@hasDecl(posix.TCP, "KEEPIDLE")) {
         const idle_value: c_int = @intCast(opts.keepalive_idle);
-        posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, &std.mem.toBytes(idle_value)) catch {};
+        setSocketOption(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, &std.mem.toBytes(idle_value)) catch {};
     }
     if (@hasDecl(posix.TCP, "KEEPINTVL")) {
         const intvl_value: c_int = @intCast(opts.keepalive_interval);
-        posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, &std.mem.toBytes(intvl_value)) catch {};
+        setSocketOption(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, &std.mem.toBytes(intvl_value)) catch {};
     }
     if (@hasDecl(posix.TCP, "KEEPCNT")) {
         const cnt_value: c_int = @intCast(opts.keepalive_count);
-        posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, &std.mem.toBytes(cnt_value)) catch {};
+        setSocketOption(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, &std.mem.toBytes(cnt_value)) catch {};
     }
+}
+
+/// Send on socket fd with Zig 0.16 compatible APIs.
+pub fn sendCompat(fd: posix.fd_t, data: []const u8) !usize {
+    if (builtin.target.os.tag == .windows) {
+        const send_len: c_int = @intCast(@min(data.len, @as(usize, std.math.maxInt(c_int))));
+        const rc = win_sock.send(socketHandle(fd), data.ptr, send_len, 0);
+        if (rc >= 0) return @intCast(rc);
+        return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEWOULDBLOCK => error.WouldBlock,
+            win_sock.WSAECONNRESET => error.ConnectionResetByPeer,
+            win_sock.WSAESHUTDOWN => error.BrokenPipe,
+            else => error.Unexpected,
+        };
+    }
+
+    const rc = posix.system.send(socketHandle(fd), data.ptr, data.len, 0);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .AGAIN => error.WouldBlock,
+        .CONNRESET => error.ConnectionResetByPeer,
+        .PIPE => error.BrokenPipe,
+        else => |err| posix.unexpectedErrno(err),
+    };
+}
+
+/// Receive from socket fd with Zig 0.16 compatible APIs.
+pub fn recvCompat(fd: posix.fd_t, buffer: []u8) !usize {
+    if (builtin.target.os.tag == .windows) {
+        const recv_len: c_int = @intCast(@min(buffer.len, @as(usize, std.math.maxInt(c_int))));
+        const rc = win_sock.recv(socketHandle(fd), buffer.ptr, recv_len, 0);
+        if (rc >= 0) return @intCast(rc);
+        return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEWOULDBLOCK => error.WouldBlock,
+            win_sock.WSAECONNRESET => error.ConnectionResetByPeer,
+            else => error.Unexpected,
+        };
+    }
+
+    const rc = posix.system.recv(socketHandle(fd), buffer.ptr, buffer.len, 0);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .AGAIN => error.WouldBlock,
+        .CONNRESET => error.ConnectionResetByPeer,
+        .BADF => error.ConnectionResetByPeer,
+        else => |err| posix.unexpectedErrno(err),
+    };
+}
+
+/// Best-effort close of the read/write halves of a socket.
+pub fn shutdownSocket(fd: posix.fd_t, how: std.Io.net.ShutdownHow) void {
+    if (builtin.target.os.tag == .windows) {
+        _ = win_sock.shutdown(socketHandle(fd), @intFromEnum(how));
+        return;
+    }
+    _ = posix.system.shutdown(socketHandle(fd), @intFromEnum(how));
+}
+
+/// Best-effort set CLOEXEC on an fd.
+pub fn setCloseOnExec(fd: posix.fd_t) void {
+    if (builtin.target.os.tag == .windows) return;
+    _ = posix.system.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
+}
+
+/// Receive a UDP datagram using Zig 0.16 compatible APIs.
+pub fn recvFromCompat(fd: posix.fd_t, buffer: []u8, src_addr: *posix.sockaddr, src_len: *posix.socklen_t) !usize {
+    if (builtin.target.os.tag == .windows) {
+        const recv_len: c_int = @intCast(@min(buffer.len, @as(usize, std.math.maxInt(c_int))));
+        var src_len_i32: c_int = @intCast(src_len.*);
+        const rc = win_sock.recvfrom(socketHandle(fd), buffer.ptr, recv_len, 0, @ptrCast(src_addr), &src_len_i32);
+        if (rc >= 0) {
+            src_len.* = @intCast(src_len_i32);
+            return @intCast(rc);
+        }
+        return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEWOULDBLOCK => error.WouldBlock,
+            else => error.Unexpected,
+        };
+    }
+    const rc = posix.system.recvfrom(socketHandle(fd), buffer.ptr, buffer.len, 0, src_addr, src_len);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .AGAIN => error.WouldBlock,
+        else => |err| posix.unexpectedErrno(err),
+    };
+}
+
+/// Send a UDP datagram using Zig 0.16 compatible APIs.
+pub fn sendToCompat(fd: posix.fd_t, buffer: []const u8, dst_addr: *const posix.sockaddr, dst_len: posix.socklen_t) !usize {
+    if (builtin.target.os.tag == .windows) {
+        const send_len: c_int = @intCast(@min(buffer.len, @as(usize, std.math.maxInt(c_int))));
+        const rc = win_sock.sendto(socketHandle(fd), buffer.ptr, send_len, 0, @ptrCast(dst_addr), @intCast(dst_len));
+        if (rc >= 0) return @intCast(rc);
+        return switch (win_sock.WSAGetLastError()) {
+            win_sock.WSAEWOULDBLOCK => error.WouldBlock,
+            win_sock.WSAECONNRESET => error.ConnectionResetByPeer,
+            else => error.Unexpected,
+        };
+    }
+    const rc = posix.system.sendto(socketHandle(fd), buffer.ptr, buffer.len, 0, dst_addr, dst_len);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .AGAIN => error.WouldBlock,
+        else => |err| posix.unexpectedErrno(err),
+    };
 }
 
 /// Tune socket buffers for high throughput.
 pub fn tuneSocketBuffers(fd: posix.fd_t, buffer_size: u32) void {
-    const sock = toSocket(fd);
     const size: c_int = @intCast(buffer_size);
     const bytes = std.mem.toBytes(size);
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVBUF, &bytes) catch |err| {
+    setSocketOption(fd, posix.SOL.SOCKET, posix.SO.RCVBUF, &bytes) catch |err| {
         std.debug.print("[SOCKET] Failed to grow RCVBUF to {}: {}\n", .{ buffer_size, err });
     };
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDBUF, &bytes) catch |err| {
+    setSocketOption(fd, posix.SOL.SOCKET, posix.SO.SNDBUF, &bytes) catch |err| {
         std.debug.print("[SOCKET] Failed to grow SNDBUF to {}: {}\n", .{ buffer_size, err });
     };
 }
@@ -290,10 +551,9 @@ pub fn tuneSocketBuffers(fd: posix.fd_t, buffer_size: u32) void {
 ///
 /// Extracted from client.zig and server.zig to eliminate duplication.
 pub fn sendAllToFd(fd: posix.fd_t, data: []const u8) !void {
-    const socket_fd = socketHandle(fd);
     var offset: usize = 0;
     while (offset < data.len) {
-        const n = posix.send(socket_fd, data[offset..], 0) catch |err| switch (err) {
+        const n = sendCompat(fd, data[offset..]) catch |err| switch (err) {
             error.WouldBlock => continue,
             else => return err,
         };
@@ -341,15 +601,19 @@ pub fn writeFrameLocked(fd: posix.fd_t, payload: []const u8) !void {
         const iovecs = iovecs_buf[0..iovec_count];
         const written: usize = if (builtin.target.os.tag == .windows) blk: {
             // WriteFile fails on overlapped sockets (Windows default).
-            // Use posix.send (→ WSASend) which works on all socket types.
+            // Use sendCompat which works on all socket types.
             const first = iovecs[0];
-            break :blk posix.send(socketHandle(fd), first.base[0..first.len], 0) catch |err| switch (err) {
+            break :blk sendCompat(fd, first.base[0..first.len]) catch |err| switch (err) {
                 error.WouldBlock => continue,
                 else => return err,
             };
-        } else posix.writev(fd, iovecs) catch |err| switch (err) {
-            error.WouldBlock => continue,
-            else => return err,
+        } else blk: {
+            const rc = posix.system.writev(fd, iovecs.ptr, @intCast(iovecs.len));
+            switch (posix.errno(rc)) {
+                .SUCCESS => break :blk @intCast(rc),
+                .AGAIN => continue,
+                else => |err| return posix.unexpectedErrno(err),
+            }
         };
         if (written == 0) return error.ConnectionClosed;
 
@@ -389,10 +653,9 @@ pub fn resolveHostPort(host: []const u8, port: u16) !net.Address {
 
 /// Receive an exact number of bytes from a socket file descriptor.
 pub fn recvAllFromFd(fd: posix.fd_t, buffer: []u8) !void {
-    const socket_fd = socketHandle(fd);
     var offset: usize = 0;
     while (offset < buffer.len) {
-        const n = posix.recv(socket_fd, buffer[offset..], 0) catch |err| switch (err) {
+        const n = recvCompat(fd, buffer[offset..]) catch |err| switch (err) {
             error.WouldBlock => continue,
             else => return err,
         };

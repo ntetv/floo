@@ -383,11 +383,11 @@ Download from [releases page](https://github.com/YUX/floo/releases).
 
 ## 🏗️ Building from Source
 
-Requires [Zig 0.16.0-dev (master)](https://ziglang.org/download/)
+Requires [Zig 0.16.0](https://ziglang.org/download/)
 
 ```bash
-# Install Zig master (recommended using zvm)
-zvm use master
+# Install Zig 0.16.0
+zvm use 0.16.0
 
 # Debug build (fast compilation)
 zig build

@@ -4,7 +4,7 @@ const posix = std.posix;
 const native_endian = builtin.cpu.arch.endian();
 
 /// Windows ADDRINFOA layout.
-/// Workaround: ws2_32.addrinfo is missing from Zig 0.16.0-dev.1484 std lib.
+/// Compatibility shim for Zig 0.16.0 stdlib on Windows.
 const WinAddrInfo = extern struct {
     flags: c_int,
     family: c_int,
