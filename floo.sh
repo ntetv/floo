@@ -544,7 +544,9 @@ build_client_import_command() {
     preset=$(base64_url_encode "$(preset_json "$server_addr" "$cipher" "$psk_value" "$token_value" "$proxy_mode" "$map_name" "$mode_value" "$client_id")")
 
     echo
-    echo -e "${YELLOW}客户端一键部署命令（仅需修改 --client-target=...）：${PLAIN}"
+    echo -e "${YELLOW}客户端一键部署命令：${PLAIN}"
+    echo -e "${YELLOW}- --preset 内已包含服务端公网地址与隧道端口${PLAIN}"
+    echo -e "${YELLOW}- 只需按实际情况修改 --client-target=...（客户端本机服务地址）${PLAIN}"
     echo "bash <(curl -fsSL \"$FLOO_SCRIPT_URL\") import-client --preset=$preset --client-target=$suggested_target"
 }
 
@@ -739,6 +741,7 @@ do_add() {
     local mode_value
     local suggested_target
     local public_server_addr
+    local default_server_addr
 
     echo -e "${YELLOW}--- 添加新实例 ---${PLAIN}"
     echo "1. 添加服务端 (floos)"
@@ -788,9 +791,15 @@ EOF
         chmod 600 "$FLOO_CONF_DIR/$id.toml"
         start_instance_unit "server" "$id" "$mode_value"
         suggested_target=$(suggest_client_target "$port_input")
-        read -r -p "客户端连接地址 (默认使用公网 IP:端口，用于生成一键部署命令): " public_server_addr
-        [[ -z $public_server_addr ]] && public_server_addr="$(curl -fsSL --max-time 5 ip.sb 2>/dev/null):$tunnel_port"
-        [[ $public_server_addr == :$tunnel_port ]] && public_server_addr="127.0.0.1:$tunnel_port"
+        default_server_addr="$(curl -fsSL --max-time 5 ip.sb 2>/dev/null)"
+        if [[ -n $default_server_addr ]]; then
+            default_server_addr="$default_server_addr:$tunnel_port"
+            read -r -p "客户端连接地址（回车使用 $default_server_addr，用于生成一键部署命令）: " public_server_addr
+            [[ -z $public_server_addr ]] && public_server_addr="$default_server_addr"
+        else
+            read -r -p "客户端连接地址（未能自动获取公网 IP，请手动输入 IP:端口）: " public_server_addr
+            [[ -z $public_server_addr ]] && public_server_addr="127.0.0.1:$tunnel_port"
+        fi
         build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id-client" "$suggested_target"
     else
         # --- 客户端逻辑 ---
