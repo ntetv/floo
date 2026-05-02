@@ -904,7 +904,13 @@ show_status() {
 
     echo -e "${GREEN}========================================${PLAIN}"
     if [[ -x "$FLOO_BIN_SERVER" && -x "$FLOO_BIN_CLIENT" ]]; then
-        echo -e " 安装状态: ${GREEN}已安装${PLAIN}"
+        echo -e " 安装状态: ${GREEN}已安装（服务端 + 客户端）${PLAIN}"
+        echo -e " 当前发布: ${GREEN}latest${PLAIN} (${FLOO_GITHUB_REPO} / gh.5ieee.com)"
+    elif [[ -x "$FLOO_BIN_SERVER" ]]; then
+        echo -e " 安装状态: ${GREEN}已安装（仅服务端）${PLAIN}"
+        echo -e " 当前发布: ${GREEN}latest${PLAIN} (${FLOO_GITHUB_REPO} / gh.5ieee.com)"
+    elif [[ -x "$FLOO_BIN_CLIENT" ]]; then
+        echo -e " 安装状态: ${GREEN}已安装（仅客户端）${PLAIN}"
         echo -e " 当前发布: ${GREEN}latest${PLAIN} (${FLOO_GITHUB_REPO} / gh.5ieee.com)"
     else
         echo -e " 安装状态: ${RED}未安装${PLAIN}"
