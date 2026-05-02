@@ -742,6 +742,7 @@ do_add() {
     local suggested_target
     local public_server_addr
     local default_server_addr
+    local client_target_override
 
     echo -e "${YELLOW}--- 添加新实例 ---${PLAIN}"
     echo "1. 添加服务端 (floos)"
@@ -793,13 +794,12 @@ EOF
         suggested_target=$(suggest_client_target "$port_input")
         default_server_addr="$(curl -fsSL --max-time 5 ip.sb 2>/dev/null)"
         if [[ -n $default_server_addr ]]; then
-            default_server_addr="$default_server_addr:$tunnel_port"
-            read -r -p "客户端连接地址（回车使用 $default_server_addr，用于生成一键部署命令）: " public_server_addr
-            [[ -z $public_server_addr ]] && public_server_addr="$default_server_addr"
+            public_server_addr="$default_server_addr:$tunnel_port"
         else
-            read -r -p "客户端连接地址（未能自动获取公网 IP，请手动输入 IP:端口）: " public_server_addr
-            [[ -z $public_server_addr ]] && public_server_addr="127.0.0.1:$tunnel_port"
+            public_server_addr="127.0.0.1:$tunnel_port"
         fi
+        read -r -p "默认客户端使用 $suggested_target，用于生成一键部署命令（回车保持默认，如需覆盖请输入 IP:PORT）: " client_target_override
+        [[ -n $client_target_override ]] && suggested_target="$client_target_override"
         build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id-client" "$suggested_target"
     else
         # --- 客户端逻辑 ---
