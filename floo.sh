@@ -800,7 +800,7 @@ EOF
         fi
         read -r -p "客户端本地目标地址（默认 $suggested_target，回车保持）: " client_target_override
         [[ -n $client_target_override ]] && suggested_target="$client_target_override"
-        build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id-client" "$suggested_target"
+        build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id" "$suggested_target"
     else
         # --- 客户端逻辑 ---
         read -r -p "服务端隧道地址 (IP:端口): " server_addr
