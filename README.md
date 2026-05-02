@@ -402,6 +402,8 @@ zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu -Dcpu=cortex_a72
 zig build release-all
 ```
 
+Repository note: the 5 official release bundles are mirrored under `release-assets/`. After `zig build release-all`, refresh those archives from `zig-out/release/...` so the checked-in bundles and GitHub Release assets match the rebuilt binaries.
+
 Run tests:
 ```bash
 zig build test
