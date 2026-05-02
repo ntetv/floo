@@ -407,10 +407,10 @@ show_all_logs() {
 select_mode_value() {
     local choice
 
-    echo "性能模式:"
-    echo "1. 低并发（写入 mode = 1）"
-    echo "2. 高并发（写入 mode = 2，并使用高并发 service 参数）"
-    read -r -p "选择 [1-2]: " choice
+    echo "性能模式:" >&2
+    echo "1. 低并发（写入 mode = 1）" >&2
+    echo "2. 高并发（写入 mode = 2，并使用高并发 service 参数）" >&2
+    read -r -p "选择 [1-2]: " choice >&2
 
     case $choice in
         1|2) echo "$choice" ;;
@@ -421,11 +421,11 @@ select_mode_value() {
 select_install_kind() {
     local choice
 
-    echo "安装目标:"
-    echo "1. 仅服务端 (floos)"
-    echo "2. 仅客户端 (flooc)"
-    echo "3. 服务端 + 客户端"
-    read -r -p "选择 [1-3]: " choice
+    echo "安装目标:" >&2
+    echo "1. 仅服务端 (floos)" >&2
+    echo "2. 仅客户端 (flooc)" >&2
+    echo "3. 服务端 + 客户端" >&2
+    read -r -p "选择 [1-3]: " choice >&2
 
     case $choice in
         1) echo "server" ;;
