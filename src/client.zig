@@ -1584,7 +1584,17 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
             params.cfg,
             params.static_keypair,
         ) catch |err| {
-            std.debug.print("[{s} {}] Failed to create client: {}\n", .{ label, params.tunnel_index, err });
+            switch (err) {
+                error.HandshakeFailed => std.debug.print(
+                    "[{s} {}] Tunnel handshake failed. Possible causes: server not deployed yet, non-floo service on the target port, or mismatched cipher/PSK.\n",
+                    .{ label, params.tunnel_index },
+                ),
+                error.VersionMismatch => std.debug.print(
+                    "[{s} {}] Tunnel version mismatch. Update server/client to the same Floo version.\n",
+                    .{ label, params.tunnel_index },
+                ),
+                else => std.debug.print("[{s} {}] Failed to create client: {}\n", .{ label, params.tunnel_index, err }),
+            }
             {
                 const ns = retry_delay_ms * std.time.ns_per_ms;
                 common.crossSleep(ns);

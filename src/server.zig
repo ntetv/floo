@@ -1652,7 +1652,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // Create tunnel connection (shares static identity across all connections)
         const tunnel_conn = TunnelConnection.create(allocator, tunnel_fd, &cfg, static_keypair) catch |err| {
-            std.debug.print("[SERVER] Failed to create tunnel: {}\n", .{err});
+            switch (err) {
+                error.HandshakeFailed => std.debug.print(
+                    "[SERVER] Tunnel handshake failed. Possible causes: non-floo client traffic, client not deployed yet, or mismatched cipher/PSK.\n",
+                    .{},
+                ),
+                error.VersionMismatch => std.debug.print(
+                    "[SERVER] Tunnel version mismatch. Update server/client to the same Floo version.\n",
+                    .{},
+                ),
+                else => std.debug.print("[SERVER] Failed to create tunnel: {}\n", .{err}),
+            }
             common.closeFd(tunnel_fd);
             continue;
         };
