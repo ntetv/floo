@@ -798,7 +798,7 @@ EOF
         else
             public_server_addr="127.0.0.1:$tunnel_port"
         fi
-        read -r -p "默认客户端使用 $suggested_target，用于生成一键部署命令（回车保持默认，如需覆盖请输入 IP:PORT）: " client_target_override
+        read -r -p "客户端本地目标地址（默认 $suggested_target，回车保持）: " client_target_override
         [[ -n $client_target_override ]] && suggested_target="$client_target_override"
         build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id-client" "$suggested_target"
     else
