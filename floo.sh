@@ -122,6 +122,8 @@ install_release_binaries() {
     local asset_name=$1
     local install_kind=${2:-both}
     local tmp_dir
+    local server_bin
+    local client_bin
     tmp_dir=$(mktemp -d) || return 1
 
     install -d "$FLOO_CONF_DIR" "$(dirname "$FLOO_BIN_SERVER")"
@@ -137,7 +139,10 @@ install_release_binaries() {
         return 1
     fi
 
-    if [[ ! -f "$tmp_dir/floos" || ! -f "$tmp_dir/flooc" ]]; then
+    server_bin=$(find "$tmp_dir" -type f -name floos | head -n 1)
+    client_bin=$(find "$tmp_dir" -type f -name flooc | head -n 1)
+
+    if [[ -z $server_bin || -z $client_bin ]]; then
         echo -e "${RED}错误：安装包内未找到 floos/flooc 二进制文件。${PLAIN}"
         rm -rf "$tmp_dir"
         return 1
@@ -145,16 +150,16 @@ install_release_binaries() {
 
     case $install_kind in
         server)
-            install -m 755 "$tmp_dir/floos" "$FLOO_BIN_SERVER"
+            install -m 755 "$server_bin" "$FLOO_BIN_SERVER"
             ln -sf "$FLOO_BIN_SERVER" "$FLOO_BIN_SERVER_LEGACY"
             ;;
         client)
-            install -m 755 "$tmp_dir/flooc" "$FLOO_BIN_CLIENT"
+            install -m 755 "$client_bin" "$FLOO_BIN_CLIENT"
             ln -sf "$FLOO_BIN_CLIENT" "$FLOO_BIN_CLIENT_LEGACY"
             ;;
         both)
-            install -m 755 "$tmp_dir/floos" "$FLOO_BIN_SERVER"
-            install -m 755 "$tmp_dir/flooc" "$FLOO_BIN_CLIENT"
+            install -m 755 "$server_bin" "$FLOO_BIN_SERVER"
+            install -m 755 "$client_bin" "$FLOO_BIN_CLIENT"
             ln -sf "$FLOO_BIN_SERVER" "$FLOO_BIN_SERVER_LEGACY"
             ln -sf "$FLOO_BIN_CLIENT" "$FLOO_BIN_CLIENT_LEGACY"
             ;;
