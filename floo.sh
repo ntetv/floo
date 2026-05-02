@@ -789,7 +789,7 @@ EOF
         start_instance_unit "server" "$id" "$mode_value"
         suggested_target=$(suggest_client_target "$port_input")
         read -r -p "客户端连接地址 (默认使用公网 IP:端口，用于生成一键部署命令): " public_server_addr
-        [[ -z $public_server_addr ]] && public_server_addr="$(curl -fsSL --max-time 5 https://ip.sb 2>/dev/null):$tunnel_port"
+        [[ -z $public_server_addr ]] && public_server_addr="$(curl -fsSL --max-time 5 ip.sb 2>/dev/null):$tunnel_port"
         [[ $public_server_addr == :$tunnel_port ]] && public_server_addr="127.0.0.1:$tunnel_port"
         build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$mode" "$map_name" "$mode_value" "$id-client" "$suggested_target"
     else
