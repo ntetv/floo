@@ -950,7 +950,7 @@ const TunnelClient = struct {
                 if (maybe_conn) |entry| {
                     entry.value.stop();
                     entry.value.releaseRef();
-                    std.debug.print("[CLIENT] Connection {} cleaned up after CLOSE message\n", .{close_msg.stream_id});
+                    tracePrint(enable_tunnel_trace, "[CLIENT] Connection {} cleaned up after CLOSE message\n", .{close_msg.stream_id});
                 } else {
                     // Connection already cleaned itself up
                     tracePrint(enable_tunnel_trace, "[CLIENT] Connection {} already removed (self-cleanup)\n", .{close_msg.stream_id});
@@ -981,7 +981,7 @@ const TunnelClient = struct {
                 // REVERSE MODE: Server requests reverse connection using new message format
                 const msg = try tunnel.ReverseConnectMsg.decode(message_slice);
 
-                std.debug.print("[CLIENT] REVERSE_CONNECT from server: service_id={} stream_id={}\n", .{
+                tracePrint(enable_tunnel_trace, "[CLIENT] REVERSE_CONNECT from server: service_id={} stream_id={}\n", .{
                     msg.service_id,
                     msg.stream_id,
                 });
@@ -1046,7 +1046,7 @@ const TunnelClient = struct {
                     return;
                 };
 
-                std.debug.print("[CLIENT-REVERSE] Connected to local {s}:{} for stream {}\n", .{ service.address, service.port, msg.stream_id });
+                tracePrint(enable_tunnel_trace, "[CLIENT-REVERSE] Connected to local {s}:{} for stream {}\n", .{ service.address, service.port, msg.stream_id });
 
                 // Create LocalConnection
                 const conn = LocalConnection.create(global_allocator, msg.service_id, msg.stream_id, local_fd, self) catch |err| {

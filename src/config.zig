@@ -211,11 +211,6 @@ pub const ServerConfig = struct {
         const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 std.debug.print("[CONFIG] File not found: {s}. Create it using examples/ templates.\n", .{path});
-                var cfg = try ServerConfig.init(allocator);
-                errdefer cfg.deinit();
-                try cfg.validate();
-                try validateSecurity(&cfg);
-                return cfg;
             }
             return err;
         };
@@ -523,11 +518,6 @@ pub const ClientConfig = struct {
         const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 std.debug.print("[CONFIG] File not found: {s}. Create it using examples/ templates.\n", .{path});
-                var cfg = try ClientConfig.init(allocator);
-                errdefer cfg.deinit();
-                try cfg.validate();
-                try validateSecurity(&cfg);
-                return cfg;
             }
             return err;
         };
@@ -1093,6 +1083,26 @@ test "canonicalize cipher names is case-insensitive" {
     try std.testing.expectEqualStrings("aegis128l", canonicalizeCipher("AeGiS128L").?);
     try std.testing.expectEqualStrings("chacha20poly1305", canonicalizeCipher("ChaChaPoly").?);
     try std.testing.expectEqualStrings("none", canonicalizeCipher("NONE").?);
+}
+
+test "server loadFromFile returns FileNotFound for missing config" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const missing_path = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp_dir.sub_path[0..], "missing-server-config.toml" });
+    defer std.testing.allocator.free(missing_path);
+
+    try std.testing.expectError(error.FileNotFound, ServerConfig.loadFromFile(std.testing.allocator, missing_path));
+}
+
+test "client loadFromFile returns FileNotFound for missing config" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const missing_path = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp_dir.sub_path[0..], "missing-client-config.toml" });
+    defer std.testing.allocator.free(missing_path);
+
+    try std.testing.expectError(error.FileNotFound, ClientConfig.loadFromFile(std.testing.allocator, missing_path));
 }
 
 test "validateSecurity rejects default PSK" {

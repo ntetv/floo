@@ -475,7 +475,7 @@ const ReverseListener = struct {
                 continue;
             }
 
-            std.debug.print("[REVERSE] Accepted connection on {s}:{}\n", .{ self.service.address, self.service.port });
+            tracePrint(enable_tunnel_trace, "[REVERSE] Accepted connection on {s}:{}\n", .{ self.service.address, self.service.port });
 
             // Allocate stream ID
             const stream_id = active_conn.next_stream_id.fetchAdd(1, .acq_rel);
@@ -499,7 +499,7 @@ const ReverseListener = struct {
                 continue;
             };
 
-            std.debug.print("[REVERSE] Sent REVERSE_CONNECT service_id={} stream_id={}\n", .{ self.service.id, stream_id });
+            tracePrint(enable_tunnel_trace, "[REVERSE] Sent REVERSE_CONNECT service_id={} stream_id={}\n", .{ self.service.id, stream_id });
 
             // Create Stream for this connection
             const stream = Stream.create(self.allocator, self.service.id, stream_id, client_fd, active_conn) catch |err| {
@@ -521,7 +521,7 @@ const ReverseListener = struct {
                 continue;
             };
 
-            std.debug.print("[REVERSE] Stream {} registered and ready\n", .{stream_id});
+            tracePrint(enable_tunnel_trace, "[REVERSE] Stream {} registered and ready\n", .{stream_id});
         }
 
         std.debug.print("[REVERSE] Acceptor thread for {s}:{} exiting\n", .{ self.service.address, self.service.port });
@@ -972,7 +972,7 @@ const TunnelConnection = struct {
                     // Stream still exists, stop and destroy it
                     entry.value.stop();
                     entry.value.releaseRef(); // drop map reference
-                    std.debug.print("[TUNNEL] Stream {} cleaned up after CLOSE message\n", .{close_msg.stream_id});
+                    tracePrint(enable_tunnel_trace, "[TUNNEL] Stream {} cleaned up after CLOSE message\n", .{close_msg.stream_id});
                 } else {
                     // Stream already cleaned itself up
                     tracePrint(enable_tunnel_trace, "[TUNNEL] Stream {} already removed (self-cleanup)\n", .{close_msg.stream_id});
