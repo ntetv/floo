@@ -15,6 +15,7 @@ All notable changes to Floo will be documented in this file.
 - Consolidated Windows socket, poll, sleep, and socket-option compatibility in the shared networking layer.
 - Reduced default reverse-mode log noise by moving high-frequency happy-path tunnel chatter into concise event-style status output while keeping failure logs readable.
 - Refreshed all 5 checked-in release bundles so `release-assets/` and the GitHub Release attachments match the rebuilt binaries.
+- Pinned CI, nightly, and release workflows to Zig 0.16.0 stable instead of tracking `master`, so all automated builds now match the documented toolchain.
 
 ### Fixed
 - Fixed reverse tunnel instability triggered by multi-tunnel reconnect and listener rebinding races.
