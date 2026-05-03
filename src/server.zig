@@ -21,6 +21,7 @@ const formatAddress = common.formatAddress;
 const resolveHostPort = common.resolveHostPort;
 
 const CheckStatus = diagnostics.CheckStatus;
+const DisconnectReason = diagnostics.DisconnectReason;
 
 const DEFAULT_CONFIG_PATH = "floos.toml";
 const enable_stream_trace = false;
@@ -84,6 +85,37 @@ fn notifySignalPipe(sig: c_int) void {
     if (wr == -1) return;
     var byte = [_]u8{@intCast(@as(u8, @intCast(sig & 0xFF)))};
     _ = posix.system.write(wr, &byte, byte.len);
+}
+
+fn emitCheckpointServer(mode_id: u8, tunnels: usize) void {
+    diagnostics.emitEvent(.event, "CHECK_POINT|ROLE=SERVER|MODE={}|TUNNELS={}", .{ mode_id, tunnels });
+}
+
+fn emitHandshakeFailServer(mode_id: u8, cause: []const u8) void {
+    diagnostics.emitEvent(.warn, "HANDSHAKE_FAIL|ROLE=SERVER|MODE={}|CAUSE={s}", .{ mode_id, cause });
+}
+
+fn emitTunnelDownServer(mode_id: u8, tunnel_index: usize, reason: DisconnectReason) void {
+    diagnostics.emitEvent(.warn, "TUNNEL_DOWN|ROLE=SERVER|MODE={}|TUNNEL={}|REASON={s}", .{ mode_id, tunnel_index, diagnostics.disconnectReasonLabel(reason) });
+}
+
+fn emitReverseRebind(mode_id: u8, service: config.Service, from_index: usize, to_index: usize) void {
+    diagnostics.emitEvent(.event, "REVERSE_REBIND|ROLE=SERVER|MODE={}|SERVICE={s}|LISTEN={s}:{}|FROM={}|TO={}", .{ mode_id, service.name, service.address, service.port, from_index, to_index });
+}
+
+fn countHealthyTunnelConnections(connections: []ConnectionEntry) usize {
+    var count: usize = 0;
+    for (connections) |entry| {
+        if (entry.conn.running.load(.acquire)) count += 1;
+    }
+    return count;
+}
+
+fn maybeEmitCheckpointServer(last_checkpoint_ms: *i64, mode_id: u8, tunnels: usize) void {
+    const now = common.milliTimestamp();
+    if (last_checkpoint_ms.* != 0 and now - last_checkpoint_ms.* < 60 * 1000) return;
+    last_checkpoint_ms.* = now;
+    emitCheckpointServer(mode_id, tunnels);
 }
 
 fn cpuCountCached() usize {
@@ -613,6 +645,7 @@ const Stream = struct {
 /// Tunnel connection handler (one per client connection)
 const TunnelConnection = struct {
     tunnel_fd: posix.fd_t,
+    tunnel_index: usize,
     streams: std.HashMap(StreamKey, *Stream, StreamKeyContext, 80),
     streams_mutex: std.Io.Mutex,
     channel: transport.Channel,
@@ -625,6 +658,7 @@ const TunnelConnection = struct {
     // Heartbeat support
     heartbeat_interval_ms: u32, // Heartbeat interval in milliseconds (0 = disabled)
     heartbeat_thread: ?std.Thread, // Heartbeat sender thread
+    disconnect_reason: DisconnectReason,
 
     // Stream ID allocation for reverse services
     next_stream_id: std.atomic.Value(u32),
@@ -633,6 +667,10 @@ const TunnelConnection = struct {
     cfg: *const config.ServerConfig,
 
     /// Heartbeat thread: periodically sends heartbeat messages to client
+    fn markDisconnectReason(self: *TunnelConnection, reason: DisconnectReason) void {
+        diagnostics.recordDisconnectReason(&self.disconnect_reason, reason);
+    }
+
     fn heartbeatThreadMain(self: *TunnelConnection) void {
         std.debug.print("[HEARTBEAT] Thread started (interval: {}ms)\n", .{self.heartbeat_interval_ms});
 
@@ -674,7 +712,13 @@ const TunnelConnection = struct {
         std.debug.print("[HEARTBEAT] Thread exiting\n", .{});
     }
 
-    fn create(allocator: std.mem.Allocator, tunnel_fd: posix.fd_t, cfg: *const config.ServerConfig, static_keypair: std.crypto.dh.X25519.KeyPair) !*TunnelConnection {
+    fn create(
+        allocator: std.mem.Allocator,
+        tunnel_fd: posix.fd_t,
+        tunnel_index: usize,
+        cfg: *const config.ServerConfig,
+        static_keypair: std.crypto.dh.X25519.KeyPair,
+    ) !*TunnelConnection {
         setSockOpts(tunnel_fd, cfg);
 
         const canonical_cipher = config.canonicalCipher(cfg);
@@ -710,6 +754,7 @@ const TunnelConnection = struct {
         // Initialize struct with cipher state
         conn.* = .{
             .tunnel_fd = tunnel_fd,
+            .tunnel_index = tunnel_index,
             .streams = std.HashMap(StreamKey, *Stream, StreamKeyContext, 80).init(allocator),
             .streams_mutex = std.Io.Mutex.init,
             .channel = channel,
@@ -718,6 +763,7 @@ const TunnelConnection = struct {
             .udp_service_id = null,
             .heartbeat_interval_ms = cfg.advanced.heartbeat_interval_seconds * 1000, // Convert to milliseconds
             .heartbeat_thread = null,
+            .disconnect_reason = .none,
             .next_stream_id = std.atomic.Value(u32).init(1),
             .cfg = cfg,
         };
@@ -826,12 +872,17 @@ const TunnelConnection = struct {
                         if ((fd_info.revents & common.POLL_IN) == 0) continue;
 
                         const n = common.recvCompat(self.tunnel_fd, &buf) catch |err| {
+                            self.markDisconnectReason(switch (err) {
+                                error.ConnectionResetByPeer => .reset,
+                                else => .recv_error,
+                            });
                             std.debug.print("[TUNNEL] Recv error: {}\n", .{err});
                             fatal_error = true;
                             break :loop;
                         };
 
                         if (n == 0) {
+                            self.markDisconnectReason(.eof);
                             std.debug.print("[TUNNEL] Client disconnected\n", .{});
                             fatal_error = true;
                             break :loop;
@@ -840,6 +891,7 @@ const TunnelConnection = struct {
                         tracePrint(enable_tunnel_trace, "[TUNNEL] Received {} bytes from client\n", .{n});
 
                         decoder.feed(buf[0..n]) catch |err| {
+                            self.markDisconnectReason(.decoder_error);
                             std.debug.print("[TUNNEL] Decoder feed error: {}\n", .{err});
                             fatal_error = true;
                             break :loop;
@@ -847,6 +899,7 @@ const TunnelConnection = struct {
 
                         while (decoder.decode() catch null) |frame_payload| {
                             self.handleMessage(frame_payload) catch |err| {
+                                self.markDisconnectReason(.protocol_error);
                                 std.debug.print("[TUNNEL] Handle message error: {}\n", .{err});
                                 self.running.store(false, .release);
                                 fatal_error = true;
@@ -1313,6 +1366,7 @@ test "forwardTargetData sends plaintext frames" {
 
     var conn = TunnelConnection{
         .tunnel_fd = tunnel_pair[0],
+        .tunnel_index = 0,
         .streams = std.HashMap(StreamKey, *Stream, StreamKeyContext, 80).init(allocator),
         .streams_mutex = .{},
         .channel = channel,
@@ -1321,6 +1375,7 @@ test "forwardTargetData sends plaintext frames" {
         .udp_service_id = null,
         .heartbeat_interval_ms = 0,
         .heartbeat_thread = null,
+        .disconnect_reason = .none,
         .next_stream_id = std.atomic.Value(u32).init(1),
         .cfg = &cfg,
     };
@@ -1541,6 +1596,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var connections = std.ArrayListUnmanaged(ConnectionEntry).empty;
     var reverse_listeners = std.ArrayListUnmanaged(*ReverseListener).empty;
     var reverse_listeners_conn: ?*TunnelConnection = null;
+    var last_checkpoint_ms: i64 = 0;
     defer {
         stopAllReverseListeners(&reverse_listeners);
         reverse_listeners.deinit(allocator);
@@ -1577,6 +1633,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             std.debug.print("\n[SHUTDOWN] Received interrupt, stopping server...\n", .{});
             shutdown_notice_printed = true;
         }
+        maybeEmitCheckpointServer(&last_checkpoint_ms, cfg.advanced.mode_id, countHealthyTunnelConnections(connections.items));
 
         // Reap completed connections
         var idx: usize = 0;
@@ -1584,6 +1641,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const entry = connections.items[idx];
             if (!entry.conn.running.load(.acquire)) {
                 const was_reverse_conn = if (reverse_listeners_conn) |active_conn| active_conn == entry.conn else false;
+                emitTunnelDownServer(cfg.advanced.mode_id, entry.conn.tunnel_index, entry.conn.disconnect_reason);
                 entry.thread.join();
                 entry.conn.destroy();
                 _ = connections.swapRemove(idx);
@@ -1594,6 +1652,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         if (findHealthyTunnelConnection(connections.items)) |replacement| {
                             rebindReverseListeners(&reverse_listeners, replacement);
                             reverse_listeners_conn = replacement;
+                            var rev_iter = cfg.reverse_services.valueIterator();
+                            while (rev_iter.next()) |service| {
+                                emitReverseRebind(cfg.advanced.mode_id, service.*, entry.conn.tunnel_index, replacement.tunnel_index);
+                            }
                             std.debug.print("[REVERSE] Reverse services rebound to healthy tunnel connection\n", .{});
                         }
                     }
@@ -1651,16 +1713,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
         applyTcpOptions(tunnel_fd, tcp_options);
 
         // Create tunnel connection (shares static identity across all connections)
-        const tunnel_conn = TunnelConnection.create(allocator, tunnel_fd, &cfg, static_keypair) catch |err| {
+        const tunnel_conn = TunnelConnection.create(allocator, tunnel_fd, connections.items.len, &cfg, static_keypair) catch |err| {
             switch (err) {
-                error.HandshakeFailed => std.debug.print(
-                    "[SERVER] Tunnel handshake failed. Possible causes: non-floo client traffic, client not deployed yet, or mismatched cipher/PSK.\n",
-                    .{},
-                ),
-                error.VersionMismatch => std.debug.print(
-                    "[SERVER] Tunnel version mismatch. Update server/client to the same Floo version.\n",
-                    .{},
-                ),
+                error.HandshakeFailed, error.AuthenticationFailed, error.MissingPsk, error.VersionMismatch => {
+                    emitHandshakeFailServer(cfg.advanced.mode_id, diagnostics.handshakeCauseLabel(err));
+                    switch (err) {
+                        error.HandshakeFailed => std.debug.print(
+                            "[SERVER] Tunnel handshake failed. Possible causes: non-floo client traffic, client not deployed yet, or mismatched cipher/PSK.\n",
+                            .{},
+                        ),
+                        error.VersionMismatch => std.debug.print(
+                            "[SERVER] Tunnel version mismatch. Update server/client to the same Floo version.\n",
+                            .{},
+                        ),
+                        error.AuthenticationFailed, error.MissingPsk => std.debug.print(
+                            "[SERVER] Tunnel authentication failed. Check cipher/PSK on both sides.\n",
+                            .{},
+                        ),
+                        else => unreachable,
+                    }
+                },
                 else => std.debug.print("[SERVER] Failed to create tunnel: {}\n", .{err}),
             }
             common.closeFd(tunnel_fd);

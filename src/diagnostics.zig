@@ -1,6 +1,17 @@
 const std = @import("std");
 
 pub const CheckStatus = enum { ok, warn, fail };
+pub const EventLevel = enum { event, warn };
+
+pub const DisconnectReason = enum(u8) {
+    none,
+    eof,
+    reset,
+    timeout,
+    recv_error,
+    decoder_error,
+    protocol_error,
+};
 
 pub fn reportCheck(status: CheckStatus, comptime fmt: []const u8, args: anytype) void {
     const prefix = switch (status) {
@@ -11,6 +22,41 @@ pub fn reportCheck(status: CheckStatus, comptime fmt: []const u8, args: anytype)
     std.debug.print("{s}", .{prefix});
     std.debug.print(fmt, args);
     std.debug.print("\n", .{});
+}
+
+pub fn emitEvent(level: EventLevel, comptime fmt: []const u8, args: anytype) void {
+    const prefix = switch (level) {
+        .event => "EVENT",
+        .warn => "WARN",
+    };
+    std.debug.print("{s}  " ++ fmt ++ "\n", .{prefix} ++ args);
+}
+
+pub fn recordDisconnectReason(slot: *DisconnectReason, reason: DisconnectReason) void {
+    if (slot.* == .none) {
+        slot.* = reason;
+    }
+}
+
+pub fn disconnectReasonLabel(reason: DisconnectReason) []const u8 {
+    return switch (reason) {
+        .none => "NONE",
+        .eof => "EOF",
+        .reset => "RESET",
+        .timeout => "TIMEOUT",
+        .recv_error => "RECV_ERROR",
+        .decoder_error => "DECODER_ERROR",
+        .protocol_error => "PROTOCOL_ERROR",
+    };
+}
+
+pub fn handshakeCauseLabel(err: anyerror) []const u8 {
+    return switch (err) {
+        error.HandshakeFailed => "NOT_FLOO_OR_NOT_DEPLOYED",
+        error.AuthenticationFailed, error.MissingPsk => "CIPHER_OR_PSK_MISMATCH",
+        error.VersionMismatch => "VERSION_MISMATCH",
+        else => "UNKNOWN",
+    };
 }
 
 pub fn flushEncryptStats(prefix: []const u8, total: *std.atomic.Value(u64), calls: *std.atomic.Value(u64)) void {

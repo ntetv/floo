@@ -24,6 +24,7 @@ const resolveHostPort = common.resolveHostPort;
 const math = std.math;
 
 const CheckStatus = diagnostics.CheckStatus;
+const DisconnectReason = diagnostics.DisconnectReason;
 
 const DEFAULT_CONFIG_PATH = "flooc.toml";
 const enable_tunnel_trace = false;
@@ -79,6 +80,51 @@ fn notifySignalPipe(sig: c_int) void {
     if (wr == -1) return;
     var byte = [_]u8{@intCast(@as(u8, @intCast(sig & 0xFF)))};
     _ = posix.system.write(wr, &byte, byte.len);
+}
+
+fn emitCheckpoint(mode_id: u8, active: usize, spare: usize) void {
+    diagnostics.emitEvent(.event, "CHECK_POINT|ROLE=CLIENT|MODE={}|ACTIVE={}|SPARE={}", .{ mode_id, active, spare });
+}
+
+fn emitHandshakeFailClient(mode_id: u8, target_host: []const u8, target_port: u16, cause: []const u8) void {
+    diagnostics.emitEvent(.warn, "HANDSHAKE_FAIL|ROLE=CLIENT|MODE={}|TARGET={s}:{}|CAUSE={s}", .{ mode_id, target_host, target_port, cause });
+}
+
+fn emitTunnelDownClient(mode_id: u8, tunnel_index: usize, reason: DisconnectReason) void {
+    diagnostics.emitEvent(.warn, "TUNNEL_DOWN|ROLE=CLIENT|MODE={}|TUNNEL={}|REASON={s}", .{ mode_id, tunnel_index, diagnostics.disconnectReasonLabel(reason) });
+}
+
+fn emitSparePromote(mode_id: u8, tunnel_index: usize, active: usize, spare: usize) void {
+    diagnostics.emitEvent(.event, "SPARE_PROMOTE|ROLE=CLIENT|MODE={}|TUNNEL={}|ACTIVE={}|SPARE={}", .{ mode_id, tunnel_index, active, spare });
+}
+
+const TunnelRoleCounts = struct {
+    active: usize,
+    spare: usize,
+};
+
+fn countTunnelRoles(
+    tunnel_clients: []?*TunnelClient,
+    tunnel_roles: []std.atomic.Value(TunnelSlotRole),
+) TunnelRoleCounts {
+    var active: usize = 0;
+    var spare: usize = 0;
+    for (tunnel_clients, tunnel_roles) |client_opt, *role| {
+        const client = client_opt orelse continue;
+        if (!client.running.load(.acquire)) continue;
+        switch (role.load(.acquire)) {
+            .active => active += 1,
+            .spare => spare += 1,
+        }
+    }
+    return .{ .active = active, .spare = spare };
+}
+
+fn maybeEmitCheckpointClient(last_checkpoint_ms: *i64, mode_id: u8, counts: TunnelRoleCounts) void {
+    const now = common.milliTimestamp();
+    if (last_checkpoint_ms.* != 0 and now - last_checkpoint_ms.* < 60 * 1000) return;
+    last_checkpoint_ms.* = now;
+    emitCheckpoint(mode_id, counts.active, counts.spare);
 }
 
 fn clientCpuCountCached() usize {
@@ -622,6 +668,7 @@ fn effectiveTunnelCount(settings: *config.AdvancedSettings) usize {
 /// Tunnel client
 const TunnelClient = struct {
     tunnel_fd: posix.fd_t,
+    tunnel_index: usize,
     service_id: tunnel.ServiceId,
     connections: std.AutoHashMap(tunnel.StreamId, *LocalConnection),
     connections_mutex: std.Io.Mutex,
@@ -636,6 +683,7 @@ const TunnelClient = struct {
     // Heartbeat support
     heartbeat_timeout_ms: u32, // Consider connection dead if no heartbeat for N milliseconds (0 = disabled)
     last_heartbeat_time: std.atomic.Value(i64), // Milliseconds since epoch of last received heartbeat
+    disconnect_reason: DisconnectReason,
 
     // Authentication
     default_token: []const u8, // Default token for authentication (empty = no auth)
@@ -643,7 +691,14 @@ const TunnelClient = struct {
     // Config reference for TCP tuning (needed for reverse mode)
     cfg: *const config.ClientConfig,
 
-    fn create(allocator: std.mem.Allocator, tunnel_fd: posix.fd_t, service_id: tunnel.ServiceId, cfg: *const config.ClientConfig, static_keypair: std.crypto.dh.X25519.KeyPair) !*TunnelClient {
+    fn create(
+        allocator: std.mem.Allocator,
+        tunnel_fd: posix.fd_t,
+        tunnel_index: usize,
+        service_id: tunnel.ServiceId,
+        cfg: *const config.ClientConfig,
+        static_keypair: std.crypto.dh.X25519.KeyPair,
+    ) !*TunnelClient {
         setSockOpts(tunnel_fd, cfg);
         errdefer common.closeFd(tunnel_fd);
 
@@ -678,6 +733,7 @@ const TunnelClient = struct {
         // Initialize struct with cipher state
         client.* = .{
             .tunnel_fd = tunnel_fd,
+            .tunnel_index = tunnel_index,
             .service_id = service_id,
             .connections = std.AutoHashMap(tunnel.StreamId, *LocalConnection).init(allocator),
             .connections_mutex = std.Io.Mutex.init,
@@ -688,6 +744,7 @@ const TunnelClient = struct {
             .transport = .tcp, // Default to TCP for now
             .heartbeat_timeout_ms = cfg.advanced.heartbeat_timeout_seconds * 1000, // Convert to milliseconds
             .last_heartbeat_time = std.atomic.Value(i64).init(common.milliTimestamp()), // Initialize to current time
+            .disconnect_reason = .none,
             .default_token = cfg.token,
             .cfg = cfg,
         };
@@ -714,6 +771,10 @@ const TunnelClient = struct {
         };
         applyTcpOptions(fd, tcp_options);
         tuneSocketBuffers(fd, cfg.advanced.socket_buffer_size);
+    }
+
+    fn markDisconnectReason(self: *TunnelClient, reason: DisconnectReason) void {
+        diagnostics.recordDisconnectReason(&self.disconnect_reason, reason);
     }
 
     fn run(self: *TunnelClient) void {
@@ -751,6 +812,7 @@ const TunnelClient = struct {
                 const elapsed_ms: u32 = @intCast(now - last_heartbeat);
 
                 if (elapsed_ms > self.heartbeat_timeout_ms) {
+                    self.markDisconnectReason(.timeout);
                     std.debug.print("[CLIENT] Heartbeat timeout! No heartbeat for {}ms (limit: {}ms)\n", .{ elapsed_ms, self.heartbeat_timeout_ms });
                     break; // Connection will be re-established by auto-reconnection logic
                 }
@@ -813,6 +875,10 @@ const TunnelClient = struct {
                         if ((fd_info.revents & common.POLL_IN) == 0) continue;
 
                         const n = common.recvCompat(self.tunnel_fd, &buf) catch |err| {
+                            self.markDisconnectReason(switch (err) {
+                                error.ConnectionResetByPeer => .reset,
+                                else => .recv_error,
+                            });
                             std.debug.print("[CLIENT] Recv error: {}\n", .{err});
                             self.running.store(false, .release);
                             fatal_error = true;
@@ -820,6 +886,7 @@ const TunnelClient = struct {
                         };
 
                         if (n == 0) {
+                            self.markDisconnectReason(.eof);
                             std.debug.print("[CLIENT] Tunnel server disconnected\n", .{});
                             self.running.store(false, .release);
                             fatal_error = true;
@@ -828,6 +895,7 @@ const TunnelClient = struct {
 
                         // Feed decoder
                         decoder.feed(buf[0..n]) catch {
+                            self.markDisconnectReason(.decoder_error);
                             std.debug.print("[CLIENT] Decoder feed error\n", .{});
                             self.running.store(false, .release);
                             fatal_error = true;
@@ -838,12 +906,14 @@ const TunnelClient = struct {
                         var decoder_had_error = false;
                         while (true) {
                             const maybe_frame = decoder.decode() catch |decode_err| {
+                                self.markDisconnectReason(.decoder_error);
                                 std.debug.print("[CLIENT] Decoder error: {}\n", .{decode_err});
                                 decoder_had_error = true;
                                 break;
                             };
                             if (maybe_frame) |frame_payload| {
                                 self.handleMessage(frame_payload) catch |err| {
+                                    self.markDisconnectReason(.protocol_error);
                                     std.debug.print("[CLIENT] Handle message error: {}\n", .{err});
                                 };
                                 continue;
@@ -1471,11 +1541,13 @@ fn promoteHotSpareIfNeeded(
     tunnel_roles: []std.atomic.Value(TunnelSlotRole),
     mutex: *std.Io.Mutex,
     desired_active: usize,
-) void {
+    mode_id: u8,
+) TunnelRoleCounts {
     mutex.lock(std.Options.debug_io) catch unreachable;
     defer mutex.unlock(std.Options.debug_io);
 
     var active_count: usize = 0;
+    var spare_count: usize = 0;
     var spare_index: ?usize = null;
     for (tunnel_clients, tunnel_roles, 0..) |client_opt, *role, i| {
         const client = client_opt orelse continue;
@@ -1483,16 +1555,24 @@ fn promoteHotSpareIfNeeded(
         switch (role.load(.acquire)) {
             .active => active_count += 1,
             .spare => {
+                spare_count += 1;
                 if (spare_index == null) spare_index = i;
             },
         }
     }
 
-    if (active_count >= desired_active) return;
-    if (spare_index) |idx| {
-        tunnel_roles[idx].store(.active, .release);
-        std.debug.print("[SPARE {}] Promoted to active tunnel (active {}/{})\n", .{ idx, active_count + 1, desired_active });
+    if (active_count < desired_active) {
+        if (spare_index) |idx| {
+            tunnel_roles[idx].store(.active, .release);
+            const spare_after = if (spare_count > 0) spare_count - 1 else 0;
+            emitSparePromote(mode_id, idx, active_count + 1, spare_after);
+            std.debug.print("[SPARE {}] Promoted to active tunnel (active {}/{})\n", .{ idx, active_count + 1, desired_active });
+            active_count += 1;
+            spare_count = spare_after;
+        }
     }
+
+    return .{ .active = active_count, .spare = spare_count };
 }
 
 /// Parameters for tunnel connection thread
@@ -1580,19 +1660,35 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
         const tunnel_client = TunnelClient.create(
             global_allocator,
             tunnel_fd,
+            params.tunnel_index,
             params.service_id,
             params.cfg,
             params.static_keypair,
         ) catch |err| {
             switch (err) {
-                error.HandshakeFailed => std.debug.print(
-                    "[{s} {}] Tunnel handshake failed. Possible causes: server not deployed yet, non-floo service on the target port, or mismatched cipher/PSK.\n",
-                    .{ label, params.tunnel_index },
-                ),
-                error.VersionMismatch => std.debug.print(
-                    "[{s} {}] Tunnel version mismatch. Update server/client to the same Floo version.\n",
-                    .{ label, params.tunnel_index },
-                ),
+                error.HandshakeFailed, error.AuthenticationFailed, error.MissingPsk, error.VersionMismatch => {
+                    emitHandshakeFailClient(
+                        params.cfg.advanced.mode_id,
+                        params.remote_host,
+                        params.remote_port,
+                        diagnostics.handshakeCauseLabel(err),
+                    );
+                    switch (err) {
+                        error.HandshakeFailed => std.debug.print(
+                            "[{s} {}] Tunnel handshake failed. Possible causes: server not deployed yet, non-floo service on the target port, or mismatched cipher/PSK.\n",
+                            .{ label, params.tunnel_index },
+                        ),
+                        error.VersionMismatch => std.debug.print(
+                            "[{s} {}] Tunnel version mismatch. Update server/client to the same Floo version.\n",
+                            .{ label, params.tunnel_index },
+                        ),
+                        error.AuthenticationFailed, error.MissingPsk => std.debug.print(
+                            "[{s} {}] Tunnel authentication failed. Check cipher/PSK on both sides.\n",
+                            .{ label, params.tunnel_index },
+                        ),
+                        else => unreachable,
+                    }
+                },
                 else => std.debug.print("[{s} {}] Failed to create client: {}\n", .{ label, params.tunnel_index, err }),
             }
             {
@@ -1619,6 +1715,8 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
         params.tunnel_client_slot.* = null;
         params.tunnel_clients_mutex.unlock(std.Options.debug_io);
         if (params.role.load(.acquire) == .active) {
+            const reason = tunnel_client.disconnect_reason;
+            emitTunnelDownClient(params.cfg.advanced.mode_id, params.tunnel_index, reason);
             params.role.store(.spare, .release);
             std.debug.print("[TUNNEL {}] Active tunnel disconnected; slot demoted to spare after reconnect\n", .{params.tunnel_index});
         }
@@ -1909,6 +2007,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     var tunnel_clients_mutex = std.Io.Mutex.init;
+    var last_checkpoint_ms: i64 = 0;
 
     // Track tunnel and service threads so we can join them before cleanup
     const tunnel_threads = try allocator.alloc(?std.Thread, total_tunnels);
@@ -2052,6 +2151,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         // Wait for shutdown signal
         while (!shutdown_flag.load(.acquire)) {
             processSignalNotifications(&shutdown_notice_printed);
+            const counts = countTunnelRoles(tunnel_clients, tunnel_roles);
+            maybeEmitCheckpointClient(&last_checkpoint_ms, cfg.advanced.mode_id, counts);
             {
                 const ns = 250 * std.time.ns_per_ms;
                 common.crossSleep(ns);
@@ -2105,6 +2206,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // Wait for shutdown signal
             while (!shutdown_flag.load(.acquire)) {
                 processSignalNotifications(&shutdown_notice_printed);
+                const counts = countTunnelRoles(tunnel_clients, tunnel_roles);
+                maybeEmitCheckpointClient(&last_checkpoint_ms, cfg.advanced.mode_id, counts);
                 {
                     const ns = 250 * std.time.ns_per_ms;
                     common.crossSleep(ns);
@@ -2122,7 +2225,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.debug.print("[READY] Client ready. Press Ctrl+C to stop.\n\n", .{});
         while (!shutdown_flag.load(.acquire)) {
             processSignalNotifications(&shutdown_notice_printed);
-            promoteHotSpareIfNeeded(tunnel_clients, tunnel_roles, &tunnel_clients_mutex, num_tunnels);
+            const counts = promoteHotSpareIfNeeded(tunnel_clients, tunnel_roles, &tunnel_clients_mutex, num_tunnels, cfg.advanced.mode_id);
+            maybeEmitCheckpointClient(&last_checkpoint_ms, cfg.advanced.mode_id, counts);
             const ns: u64 = 250 * std.time.ns_per_ms;
             common.crossSleep(ns);
         }
@@ -2144,7 +2248,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var next_tunnel: usize = 0;
         while (!shutdown_flag.load(.acquire)) {
             processSignalNotifications(&shutdown_notice_printed);
-            promoteHotSpareIfNeeded(tunnel_clients, tunnel_roles, &tunnel_clients_mutex, num_tunnels);
+            const counts = promoteHotSpareIfNeeded(tunnel_clients, tunnel_roles, &tunnel_clients_mutex, num_tunnels, cfg.advanced.mode_id);
+            maybeEmitCheckpointClient(&last_checkpoint_ms, cfg.advanced.mode_id, counts);
             // Poll for accept with timeout
             var fds = [_]common.PollFd{
                 .{ .fd = common.toSocket(listen_fd), .events = common.POLL_IN, .revents = 0 },

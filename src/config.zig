@@ -63,12 +63,14 @@ pub const AdvancedSettings = struct {
 
     // Proxy support (client-only)
     proxy_url: []const u8 = "",
+    mode_id: u8 = 0,
 
     /// Apply a built-in performance mode preset.
     /// mode=1: low-concurrency (NAT traversal, SSH, RDP)
     /// mode=2: high-concurrency (multi-user proxy, video streaming)
     /// Values in [advanced] section parsed after mode= will override these presets.
     pub fn applyMode(self: *AdvancedSettings, mode: u8) void {
+        self.mode_id = mode;
         switch (mode) {
             0 => {}, // custom mode: no change
             1 => {
