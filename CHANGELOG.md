@@ -7,16 +7,22 @@ All notable changes to Floo will be documented in this file.
 ### Added
 - Added dedicated 5-platform release packaging for x86_64 Linux musl, aarch64 Linux musl, aarch64 macOS, x86_64 macOS, and x86_64 Windows.
 - Added hot spare tunnel promotion so a pre-connected spare can take over when an active tunnel drops.
+- Added structured runtime tunnel events for high-concurrency and reverse deployments, including `CHECK_POINT`, `HANDSHAKE_FAIL`, `TUNNEL_DOWN`, `SPARE_PROMOTE`, and `REVERSE_REBIND`.
 
 ### Changed
 - Upgraded the project to Zig 0.16.0 stable for current builds and release packaging, including Windows builds.
 - Reworked reverse listener failover to rebind listeners to a healthy tunnel instead of recreating them on every reconnect.
 - Consolidated Windows socket, poll, sleep, and socket-option compatibility in the shared networking layer.
+- Reduced default reverse-mode log noise by moving high-frequency happy-path tunnel chatter into concise event-style status output while keeping failure logs readable.
+- Refreshed all 5 checked-in release bundles so `release-assets/` and the GitHub Release attachments match the rebuilt binaries.
 
 ### Fixed
 - Fixed reverse tunnel instability triggered by multi-tunnel reconnect and listener rebinding races.
 - Fixed Windows x86_64 cross-compilation issues under Zig 0.16.0.
 - Fixed noisy disconnect handling for expected tunnel reset/failover paths.
+- Fixed misleading config-file-missing handling so startup now returns `FileNotFound` directly instead of falling back to defaults and surfacing a bogus `WeakPSK` error.
+- Fixed `floo.sh` install/import flow regressions by clarifying install targets, narrowing client import to client binaries only, and improving prompt clarity.
+- Fixed tunnel handshake diagnostics on both client and server so undeployed peers, non-floo traffic, version mismatch, and cipher/PSK mismatch are reported more clearly.
 
 ## [0.1.5] - 2025-11-19
 
