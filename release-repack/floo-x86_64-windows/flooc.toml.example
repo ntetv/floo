@@ -105,9 +105,9 @@ token = "REPLACE_WITH_SERVER_TOKEN_HERE"
 # ----------------------------------------------------------------------------
 
 [advanced]
-# Parallel tunnels (0 = auto, matches CPU cores)
+# Parallel tunnels (0 = auto, capped at 4 active tunnels by default)
 # Set >0 only when you need to force a specific number.
-num_tunnels = 0
+num_tunnels = 0  # Auto, capped at 4 active tunnels
 
 # Pin each tunnel handler to a dedicated CPU core (Linux/Unix only)
 pin_threads = true

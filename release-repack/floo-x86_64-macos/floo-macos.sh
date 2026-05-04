@@ -27,7 +27,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 shopt -s nullglob
 
-[[ $(uname -s) == "Darwin" ]] || error_and_exit "floo-macos.sh only supports macOS."
+[[ $(uname -s) == "Darwin" ]] || error_and_exit "floo-macos.sh 仅支持在 macOS 上运行。"
 
 note() {
     printf '%b%s%b\n' "$YELLOW" "$1" "$PLAIN"
@@ -189,7 +189,7 @@ release_asset_name() {
         arm64|aarch64) echo "floo-aarch64-macos.tar.gz" ;;
         x86_64|amd64) echo "floo-x86_64-macos.tar.gz" ;;
         *)
-            error "Unsupported macOS architecture: $arch"
+            error "不支持的 macOS 架构：$arch"
             return 1
             ;;
     esac
@@ -202,7 +202,7 @@ fetch_url() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$url" -o "$output"
     else
-        error "curl is required to download release assets."
+        error "需要安装 curl 才能下载发布归档。"
         return 1
     fi
 }
@@ -212,12 +212,12 @@ download_release_asset() {
     local output_path=$2
     local asset_url="${FLOO_RELEASE_BASE_URL}/${asset_name}"
 
-    note "Downloading latest release asset: ${asset_name}"
+    note "正在下载最新发布归档：${asset_name}"
     if fetch_url "$asset_url" "$output_path"; then
         return 0
     fi
 
-    error "Failed to download ${asset_name}."
+    error "下载 ${asset_name} 失败。"
     return 1
 }
 
@@ -266,7 +266,7 @@ install_local_binaries() {
             install -m 755 "$client_src" "$FLOO_BIN_CLIENT"
             ;;
         *)
-            error "Unknown install kind: $install_kind"
+            error "未知安装类型：$install_kind"
             return 1
             ;;
     esac
@@ -289,7 +289,7 @@ install_release_binaries() {
     fi
 
     if ! tar -xzf "$tmp_dir/$asset_name" -C "$tmp_dir"; then
-        error "Failed to extract ${asset_name}."
+        error "解压 ${asset_name} 失败。"
         rm -rf "$tmp_dir"
         return 1
     fi
@@ -299,20 +299,20 @@ install_release_binaries() {
 
     case $install_kind in
         server)
-            [[ -n $server_bin ]] || { error "Release archive does not contain floos."; rm -rf "$tmp_dir"; return 1; }
+            [[ -n $server_bin ]] || { error "发布归档中未找到 floos。"; rm -rf "$tmp_dir"; return 1; }
             install -m 755 "$server_bin" "$FLOO_BIN_SERVER"
             ;;
         client)
-            [[ -n $client_bin ]] || { error "Release archive does not contain flooc."; rm -rf "$tmp_dir"; return 1; }
+            [[ -n $client_bin ]] || { error "发布归档中未找到 flooc。"; rm -rf "$tmp_dir"; return 1; }
             install -m 755 "$client_bin" "$FLOO_BIN_CLIENT"
             ;;
         both)
-            [[ -n $server_bin && -n $client_bin ]] || { error "Release archive does not contain floos/flooc."; rm -rf "$tmp_dir"; return 1; }
+            [[ -n $server_bin && -n $client_bin ]] || { error "发布归档中未找到 floos/flooc。"; rm -rf "$tmp_dir"; return 1; }
             install -m 755 "$server_bin" "$FLOO_BIN_SERVER"
             install -m 755 "$client_bin" "$FLOO_BIN_CLIENT"
             ;;
         *)
-            error "Unknown install kind: $install_kind"
+            error "未知安装类型：$install_kind"
             rm -rf "$tmp_dir"
             return 1
             ;;
@@ -329,7 +329,7 @@ ensure_binaries_installed() {
     ensure_dirs
 
     if install_local_binaries "$install_kind"; then
-        note "Installed managed binaries from local files next to the script."
+        note "已从脚本同目录的本地文件安装受管二进制。"
         return 0
     fi
 
@@ -397,9 +397,9 @@ config_kind_value() {
 
 service_role_for_kind() {
     if [[ $1 == "server" ]]; then
-        echo "server"
+        echo "服务端"
     else
-        echo "client"
+        echo "客户端"
     fi
 }
 
@@ -515,7 +515,7 @@ EOF
 
     if command -v plutil >/dev/null 2>&1; then
         plutil -lint "$source_path" >/dev/null || {
-            error "Generated plist is invalid: $source_path"
+            error "生成的 plist 无效：$source_path"
             return 1
         }
     fi
@@ -576,7 +576,7 @@ service_state() {
     if [[ -n $state ]]; then
         printf '%s\n' "$state"
     else
-        printf 'stopped\n'
+        printf '已停止\n'
     fi
 }
 
@@ -712,10 +712,10 @@ remove_instance_files() {
 select_mode_value() {
     local choice
 
-    echo "Performance mode:"
+    echo "性能模式："
     echo "1. mode = 1"
     echo "2. mode = 2"
-    read -r -p "Choose [1-2]: " choice
+    read -r -p "请选择 [1-2]：" choice
 
     case $choice in
         1|2) echo "$choice" ;;
@@ -726,11 +726,11 @@ select_mode_value() {
 select_cipher() {
     local choice
 
-    echo "Cipher:"
-    echo "1. aes256gcm (recommended)"
+    echo "加密算法："
+    echo "1. aes256gcm（推荐）"
     echo "2. chacha20poly1305"
-    echo "3. none (debug only)"
-    read -r -p "Choose [1-3, default 1]: " choice
+    echo "3. none（仅调试）"
+    read -r -p "请选择 [1-3，默认 1]：" choice
 
     case $choice in
         2) echo "chacha20poly1305" ;;
@@ -756,7 +756,7 @@ build_client_import_command() {
     preset=$(base64_url_encode "$(preset_json "$server_addr" "$cipher" "$psk_value" "$token_value" "$proxy_mode" "$map_name" "$mode_value" "$client_id")")
 
     echo
-    note "Client one-command import:"
+    note "客户端一键导入命令："
     echo "bash <(curl -fsSL \"$FLOO_SCRIPT_URL\") import-client --preset=$preset --client-target=$suggested_target"
 }
 
@@ -827,15 +827,15 @@ EOF
 
 show_binary_status() {
     if [[ -x $FLOO_BIN_SERVER ]]; then
-        echo "  floos: installed ($FLOO_BIN_SERVER)"
+        echo "  floos：已安装 ($FLOO_BIN_SERVER)"
     else
-        echo "  floos: missing"
+        echo "  floos：未安装"
     fi
 
     if [[ -x $FLOO_BIN_CLIENT ]]; then
-        echo "  flooc: installed ($FLOO_BIN_CLIENT)"
+        echo "  flooc：已安装 ($FLOO_BIN_CLIENT)"
     else
-        echo "  flooc: missing"
+        echo "  flooc：未安装"
     fi
 }
 
@@ -847,9 +847,9 @@ print_instance_summary() {
     local autostart=$5
 
     if [[ -n $pid ]]; then
-        printf '  [%s] %s state=%s pid=%s autostart=%s\n' "$id" "$kind" "$state" "$pid" "$autostart"
+        printf '  [%s] %s 状态=%s 进程=%s 开机自启=%s\n' "$id" "$kind" "$state" "$pid" "$autostart"
     else
-        printf '  [%s] %s state=%s autostart=%s\n' "$id" "$kind" "$state" "$autostart"
+        printf '  [%s] %s 状态=%s 开机自启=%s\n' "$id" "$kind" "$state" "$autostart"
     fi
 }
 
@@ -863,9 +863,9 @@ status_text_for_instance() {
     pid=$(service_pid "$kind" "$id")
 
     if [[ $state == "running" || -n $pid ]]; then
-        printf 'running\n'
+        printf '运行中\n'
     else
-        printf 'stopped\n'
+        printf '已停止\n'
     fi
 }
 
@@ -880,10 +880,10 @@ show_status() {
     ensure_dirs
 
     echo "========================================"
-    echo " Managed binaries"
+    echo " 受管二进制"
     show_binary_status
     echo
-    echo " Instances"
+    echo " 实例列表"
 
     for id in $(list_instance_ids); do
         has_instance=1
@@ -899,7 +899,7 @@ show_status() {
     done
 
     if [[ $has_instance -eq 0 ]]; then
-        echo "  none"
+        echo "  暂无实例"
     fi
     echo "========================================"
 }
@@ -913,7 +913,7 @@ show_instance_details() {
     local autostart
 
     instance_exists "$id" || {
-        error "Unknown instance ID: $id"
+        error "未知实例 ID：$id"
         return 1
     }
 
@@ -927,19 +927,19 @@ show_instance_details() {
         autostart="disabled"
     fi
 
-    echo "ID: $id"
-    echo "Kind: $kind"
-    echo "Mode: $(mode_for_id "$id")"
-    echo "Label: $(label_for_kind "$kind" "$id")"
-    echo "State: $state"
-    [[ -n $pid ]] && echo "PID: $pid"
-    [[ -n $last_exit ]] && echo "Last exit code: $last_exit"
-    echo "Autostart: $autostart"
-    echo "Config: $(config_path_for_id "$id")"
-    echo "Managed plist: $(plist_source_path "$kind" "$id")"
-    echo "LaunchAgent: $(launchagent_plist_path "$kind" "$id")"
-    echo "Stdout log: $(stdout_log_path "$kind" "$id")"
-    echo "Stderr log: $(stderr_log_path "$kind" "$id")"
+    echo "实例 ID：$id"
+    echo "类型：$kind"
+    echo "模式：$(mode_for_id "$id")"
+    echo "标签：$(label_for_kind "$kind" "$id")"
+    echo "状态：$state"
+    [[ -n $pid ]] && echo "进程 ID：$pid"
+    [[ -n $last_exit ]] && echo "上次退出码：$last_exit"
+    echo "开机自启：$autostart"
+    echo "配置文件：$(config_path_for_id "$id")"
+    echo "受管 plist：$(plist_source_path "$kind" "$id")"
+    echo "LaunchAgent：$(launchagent_plist_path "$kind" "$id")"
+    echo "标准输出日志：$(stdout_log_path "$kind" "$id")"
+    echo "标准错误日志：$(stderr_log_path "$kind" "$id")"
 }
 
 list_instances() {
@@ -979,7 +979,7 @@ show_logs() {
     if [[ -z $id ]]; then
         local files=("$FLOO_LOG_DIR"/*.log)
         if [[ ${#files[@]} -eq 0 ]]; then
-            error "No Floo logs found."
+            error "未找到 Floo 日志。"
             return 1
         fi
         tail -n 50 -f "${files[@]}"
@@ -987,7 +987,7 @@ show_logs() {
     fi
 
     instance_exists "$id" || {
-        error "Unknown instance ID: $id"
+        error "未知实例 ID：$id"
         return 1
     }
 
@@ -1035,53 +1035,53 @@ handle_import_client() {
         elif [[ $arg == --client-target=* ]]; then
             client_target=$(parse_flag_value "$arg" "--client-target")
         else
-            error "Unsupported argument: $arg"
+            error "不支持的参数：$arg"
             return 1
         fi
     done
 
     if [[ -z $preset || -z $client_target ]]; then
-        error "Usage: import-client --preset=... --client-target=IP:PORT"
+        error "用法：import-client --preset=... --client-target=IP:PORT"
         return 1
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
-        error "python3 is required to parse --preset."
+        error "解析 --preset 需要安装 python3。"
         return 1
     fi
 
     preset_json_value=$(base64_url_decode "$preset") || {
-        error "Failed to decode --preset."
+        error "无法解码 --preset。"
         return 1
     }
 
-    server_addr=$(json_get_string "$preset_json_value" "server") || { error "Failed to parse preset field: server"; return 1; }
-    cipher=$(json_get_string "$preset_json_value" "cipher") || { error "Failed to parse preset field: cipher"; return 1; }
-    psk_value=$(json_get_string "$preset_json_value" "psk") || { error "Failed to parse preset field: psk"; return 1; }
-    token_value=$(json_get_string "$preset_json_value" "token") || { error "Failed to parse preset field: token"; return 1; }
-    proxy_mode=$(json_get_string "$preset_json_value" "proxy_mode") || { error "Failed to parse preset field: proxy_mode"; return 1; }
-    map_name=$(json_get_string "$preset_json_value" "map_name") || { error "Failed to parse preset field: map_name"; return 1; }
-    mode_value=$(json_get_string "$preset_json_value" "mode") || { error "Failed to parse preset field: mode"; return 1; }
-    client_id=$(json_get_string "$preset_json_value" "client_id") || { error "Failed to parse preset field: client_id"; return 1; }
+    server_addr=$(json_get_string "$preset_json_value" "server") || { error "无法解析预设字段：server"; return 1; }
+    cipher=$(json_get_string "$preset_json_value" "cipher") || { error "无法解析预设字段：cipher"; return 1; }
+    psk_value=$(json_get_string "$preset_json_value" "psk") || { error "无法解析预设字段：psk"; return 1; }
+    token_value=$(json_get_string "$preset_json_value" "token") || { error "无法解析预设字段：token"; return 1; }
+    proxy_mode=$(json_get_string "$preset_json_value" "proxy_mode") || { error "无法解析预设字段：proxy_mode"; return 1; }
+    map_name=$(json_get_string "$preset_json_value" "map_name") || { error "无法解析预设字段：map_name"; return 1; }
+    mode_value=$(json_get_string "$preset_json_value" "mode") || { error "无法解析预设字段：mode"; return 1; }
+    client_id=$(json_get_string "$preset_json_value" "client_id") || { error "无法解析预设字段：client_id"; return 1; }
 
     [[ -n $server_addr && -n $map_name && -n $client_id ]] || {
-        error "Preset is missing required fields."
+        error "预设缺少必要字段。"
         return 1
     }
     [[ $mode_value == "1" || $mode_value == "2" ]] || {
-        error "Preset contains an invalid mode value."
+        error "预设中的 mode 值非法。"
         return 1
     }
     [[ $proxy_mode == "1" || $proxy_mode == "2" ]] || {
-        error "Preset contains an invalid proxy mode."
+        error "预设中的 proxy_mode 值非法。"
         return 1
     }
     valid_id "$client_id" || {
-        error "Preset contains an invalid client ID."
+        error "预设中的客户端 ID 非法。"
         return 1
     }
     instance_exists "$client_id" && {
-        error "Instance ID already exists: $client_id"
+        error "实例 ID 已存在：$client_id"
         return 1
     }
 
@@ -1092,7 +1092,7 @@ handle_import_client() {
     write_client_config "$client_id" "$server_addr" "$cipher" "$mode_value" "$proxy_mode" "$map_name" "$target"
     start_instance "client" "$client_id" || return 1
 
-    success "Client instance created and started: $client_id"
+    success "客户端实例已创建并启动：$client_id"
 }
 
 do_add() {
@@ -1111,58 +1111,58 @@ do_add() {
     local suggested_target
     local client_target_override
 
-    echo "--- Add instance ---"
-    echo "1. Server (floos)"
-    echo "2. Client (flooc)"
-    read -r -p "Choose type: " add_type
-    [[ $add_type == "1" || $add_type == "2" ]] || { error "Invalid type."; return 1; }
+    echo "--- 添加实例 ---"
+    echo "1. 服务端 (floos)"
+    echo "2. 客户端 (flooc)"
+    read -r -p "请选择类型：" add_type
+    [[ $add_type == "1" || $add_type == "2" ]] || { error "无效类型。"; return 1; }
 
-    read -r -p "Config ID (letters/digits/_/-): " id
-    valid_id "$id" || { error "Invalid ID."; return 1; }
-    instance_exists "$id" && { error "ID already exists: $id"; return 1; }
+    read -r -p "配置 ID（字母/数字/_/-）：" id
+    valid_id "$id" || { error "实例 ID 不合法。"; return 1; }
+    instance_exists "$id" && { error "实例 ID 已存在：$id"; return 1; }
 
     if [[ $add_type == "1" ]]; then
-        read -r -p "Tunnel listen port: " tunnel_port
-        [[ $tunnel_port =~ ^[0-9]+$ ]] || { error "Tunnel port must be numeric."; return 1; }
-        read -r -p "Proxy mode (1=forward, 2=reverse): " proxy_mode
-        [[ $proxy_mode == "1" || $proxy_mode == "2" ]] || { error "Invalid proxy mode."; return 1; }
-        read -r -p "Target/listener address (port or IP:PORT): " port_input
-        read -r -p "Service map name: " map_name
-        read -r -p "PSK (blank = generate): " input_psk
-        read -r -p "Token (blank = generate): " input_token
+        read -r -p "隧道监听端口：" tunnel_port
+        [[ $tunnel_port =~ ^[0-9]+$ ]] || { error "隧道监听端口必须为数字。"; return 1; }
+        read -r -p "代理模式（1=正向，2=反向）：" proxy_mode
+        [[ $proxy_mode == "1" || $proxy_mode == "2" ]] || { error "代理模式无效。"; return 1; }
+        read -r -p "目标/监听地址（端口或 IP:PORT）：" port_input
+        read -r -p "服务映射名：" map_name
+        read -r -p "PSK（留空自动生成）：" input_psk
+        read -r -p "Token（留空自动生成）：" input_token
         cipher=$(select_cipher)
         mode_value=$(select_mode_value)
-        [[ -n $mode_value ]] || { error "Invalid mode."; return 1; }
+        [[ -n $mode_value ]] || { error "模式无效。"; return 1; }
         gen_creds "$input_psk" "$input_token" || return 1
         write_server_config "$id" "$tunnel_port" "$cipher" "$mode_value" "$proxy_mode" "$map_name" "$port_input"
         start_instance "server" "$id" || return 1
 
-        read -r -p "Public server address for import-client command (blank to skip): " public_server_addr
+        read -r -p "用于 import-client 的服务端公网地址（留空跳过）：" public_server_addr
         if [[ -n $public_server_addr ]]; then
             suggested_target=$(suggest_client_target "$port_input")
-            read -r -p "Client target for import-client command [${suggested_target}]: " client_target_override
+            read -r -p "import-client 命令中的客户端目标地址 [${suggested_target}]：" client_target_override
             [[ -n $client_target_override ]] && suggested_target="$client_target_override"
             build_client_import_command "$public_server_addr" "$cipher" "$psk" "$token" "$proxy_mode" "$map_name" "$mode_value" "$id" "$suggested_target"
         fi
     else
-        read -r -p "Tunnel server address (IP:PORT): " server_addr
-        read -r -p "Proxy mode (1=forward, 2=reverse): " proxy_mode
-        [[ $proxy_mode == "1" || $proxy_mode == "2" ]] || { error "Invalid proxy mode."; return 1; }
-        read -r -p "Target address (port or IP:PORT): " port_input
-        read -r -p "Service map name: " map_name
-        read -r -p "PSK (blank = generate): " input_psk
-        read -r -p "Token (blank = generate): " input_token
+        read -r -p "隧道服务端地址（IP:PORT）：" server_addr
+        read -r -p "代理模式（1=正向，2=反向）：" proxy_mode
+        [[ $proxy_mode == "1" || $proxy_mode == "2" ]] || { error "代理模式无效。"; return 1; }
+        read -r -p "目标地址（端口或 IP:PORT）：" port_input
+        read -r -p "服务映射名：" map_name
+        read -r -p "PSK（留空自动生成）：" input_psk
+        read -r -p "Token（留空自动生成）：" input_token
         cipher=$(select_cipher)
         mode_value=$(select_mode_value)
-        [[ -n $mode_value ]] || { error "Invalid mode."; return 1; }
+        [[ -n $mode_value ]] || { error "模式无效。"; return 1; }
         gen_creds "$input_psk" "$input_token" || return 1
         write_client_config "$id" "$server_addr" "$cipher" "$mode_value" "$proxy_mode" "$map_name" "$port_input"
         start_instance "client" "$id" || return 1
     fi
 
-    success "Instance created and started: $id"
-    note "PSK: $psk"
-    note "Token: $token"
+    success "实例已创建并启动：$id"
+    note "PSK：$psk"
+    note "Token：$token"
 }
 
 delete_instance_by_id() {
@@ -1170,7 +1170,7 @@ delete_instance_by_id() {
     local kind
 
     instance_exists "$id" || {
-        error "Unknown instance ID: $id"
+        error "未知实例 ID：$id"
         return 1
     }
 
@@ -1178,7 +1178,7 @@ delete_instance_by_id() {
     disable_autostart_instance "$kind" "$id"
     stop_instance "$kind" "$id" >/dev/null 2>&1 || true
     remove_instance_files "$kind" "$id"
-    success "Deleted instance: $id"
+    success "已删除实例：$id"
 }
 
 do_delete() {
@@ -1187,22 +1187,22 @@ do_delete() {
     local confirm
     local all_id
 
-    echo "1. Delete one instance"
-    echo "2. Delete all instances"
-    read -r -p "Choose: " opt
+    echo "1. 删除单个实例"
+    echo "2. 删除全部实例"
+    read -r -p "请选择：" opt
 
     case $opt in
         1)
-            read -r -p "Instance ID: " id
-            read -r -p "Delete $id? [y/N]: " confirm
+            read -r -p "实例 ID：" id
+            read -r -p "确认删除 $id？[y/N]：" confirm
             [[ $confirm == "y" ]] || return 0
             delete_instance_by_id "$id"
             ;;
         2)
-            read -r -p "Delete ALL instances? [y/N]: " confirm
+            read -r -p "确认删除全部实例？[y/N]：" confirm
             [[ $confirm == "y" ]] || return 0
             if ! list_instances >/dev/null 2>&1; then
-                note "No instances to delete."
+                note "没有可删除的实例。"
                 return 0
             fi
             for all_id in $(list_instance_ids); do
@@ -1210,7 +1210,7 @@ do_delete() {
             done
             ;;
         *)
-            error "Invalid choice."
+            error "无效选择。"
             return 1
             ;;
     esac
@@ -1222,13 +1222,13 @@ do_ctrl() {
     local id
     local kind
 
-    echo "1. ${action} one instance"
-    echo "2. ${action} all instances"
-    read -r -p "Choose: " opt
+    echo "1. ${action} 单个实例"
+    echo "2. ${action} 全部实例"
+    read -r -p "请选择：" opt
 
     case $opt in
         1)
-            read -r -p "Instance ID: " id
+            read -r -p "实例 ID：" id
             instance_exists "$id" || { error "Unknown instance ID: $id"; return 1; }
             kind=$(kind_for_id "$id")
             case $action in
@@ -1236,11 +1236,11 @@ do_ctrl() {
                 stop) stop_instance "$kind" "$id" ;;
                 restart) restart_instance "$kind" "$id" ;;
             esac
-            success "${action} completed for $id"
+            success "$id 的 ${action} 操作已完成"
             ;;
         2)
             if ! list_instances >/dev/null 2>&1; then
-                note "No instances to operate on."
+                note "没有可操作的实例。"
                 return 0
             fi
             for id in $(list_instance_ids); do
@@ -1251,10 +1251,10 @@ do_ctrl() {
                     restart) restart_instance "$kind" "$id" ;;
                 esac || return 1
             done
-            success "${action} completed for all instances"
+            success "全部实例的 ${action} 操作已完成"
             ;;
         *)
-            error "Invalid choice."
+            error "无效选择。"
             return 1
             ;;
     esac
@@ -1266,7 +1266,7 @@ toggle_autostart_all() {
     local kind
 
     if ! list_instances >/dev/null 2>&1; then
-        note "No instances available."
+        note "当前没有可用实例。"
         return 0
     fi
 
@@ -1282,7 +1282,7 @@ toggle_autostart_all() {
 
 show_help() {
     cat <<'EOF'
-Usage:
+用法：
   floo-macos.sh add
   floo-macos.sh delete <id|--all>
   floo-macos.sh start <id|--all>
@@ -1296,10 +1296,10 @@ Usage:
   floo-macos.sh import-client --preset=... --client-target=IP:PORT
   floo-macos.sh help
 
-Notes:
-  - Managed data lives under ~/Library/Application Support/Floo
-  - Logs live under ~/Library/Logs/Floo
-  - Login autostart is installed into ~/Library/LaunchAgents
+说明：
+  - 受管数据位于 ~/Library/Application Support/Floo
+  - 日志位于 ~/Library/Logs/Floo
+  - 登录自启动安装在 ~/Library/LaunchAgents
 EOF
 }
 
@@ -1309,13 +1309,13 @@ handle_named_instance_command() {
     local kind
 
     if [[ -z $target_id ]]; then
-        error "${action} requires an instance ID or --all."
+        error "${action} 需要提供实例 ID 或 --all。"
         return 1
     fi
 
     if [[ $target_id == "--all" ]]; then
         if ! list_instances >/dev/null 2>&1; then
-            note "No instances available."
+            note "当前没有可用实例。"
             return 0
         fi
         case $action in
@@ -1358,7 +1358,7 @@ handle_autostart_command() {
     local kind
 
     if [[ -z $target_id ]]; then
-        error "${action}-autostart requires an instance ID or --all."
+        error "${action}-autostart 需要提供实例 ID 或 --all。"
         return 1
     fi
 
@@ -1406,7 +1406,7 @@ if is_command_mode "$@"; then
             ;;
         list)
             if ! list_instances; then
-                note "No instances found."
+                note "未找到任何实例。"
             fi
             ;;
         logs)
@@ -1425,7 +1425,7 @@ if is_command_mode "$@"; then
             show_help
             ;;
         *)
-            error "Unsupported command: $1"
+            error "不支持的命令：$1"
             show_help
             exit 1
             ;;
@@ -1435,20 +1435,20 @@ fi
 
 while true; do
     show_status
-    echo "Floo macOS launchd manager"
+    echo "Floo macOS launchd 管理脚本"
     echo "========================================"
-    echo "1. Add instance"
-    echo "2. Delete instance"
-    echo "3. Start instance"
-    echo "4. Stop instance"
-    echo "5. Restart instance"
-    echo "6. View logs"
-    echo "7. List instances"
-    echo "8. Enable login autostart"
-    echo "9. Disable login autostart"
-    echo "0. Exit"
+    echo "1. 添加实例"
+    echo "2. 删除实例"
+    echo "3. 启动实例"
+    echo "4. 停止实例"
+    echo "5. 重启实例"
+    echo "6. 查看日志"
+    echo "7. 列出实例"
+    echo "8. 启用登录自启动"
+    echo "9. 禁用登录自启动"
+    echo "0. 退出"
     echo "========================================"
-    read -r -p "Choose [0-9]: " main_opt
+    read -r -p "请选择 [0-9]：" main_opt
 
     case $main_opt in
         1) do_add ;;
@@ -1457,24 +1457,24 @@ while true; do
         4) do_ctrl stop ;;
         5) do_ctrl restart ;;
         6)
-            read -r -p "Instance ID (blank = all Floo logs): " id
+            read -r -p "实例 ID（留空查看全部 Floo 日志）：" id
             show_logs "$id"
             ;;
         7)
             if ! list_instances; then
-                note "No instances found."
+                note "未找到任何实例。"
             fi
             ;;
         8)
-            read -r -p "Instance ID (or --all): " id
-            handle_autostart_command enable "$id" && success "Autostart enabled."
+            read -r -p "实例 ID（或 --all）：" id
+            handle_autostart_command enable "$id" && success "已启用开机自启。"
             ;;
         9)
-            read -r -p "Instance ID (or --all): " id
-            handle_autostart_command disable "$id" && success "Autostart disabled."
+            read -r -p "实例 ID（或 --all）：" id
+            handle_autostart_command disable "$id" && success "已禁用开机自启。"
             ;;
         0) exit 0 ;;
-        *) error "Invalid option." ;;
+        *) error "无效选项。" ;;
     esac
 
 done

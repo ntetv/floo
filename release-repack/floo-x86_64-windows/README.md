@@ -327,14 +327,14 @@ voip = "10.0.0.30:5060/udp"
 ```toml
 [advanced]
 socket_buffer_size = 4194304      # 4MB buffers for high throughput
-num_tunnels = 0                   # 0 = auto based on CPU cores
+num_tunnels = 0                   # 0 = auto, capped at 4 active tunnels by default
 pin_threads = true                # Pin tunnel handlers to CPU cores
 io_batch_bytes = 131072           # Per-stream I/O buffer size
 tcp_nodelay = true                # Disable Nagle for lower latency
 heartbeat_interval_seconds = 30   # Keepalive frequency
 ```
 
-> ℹ️ **num_tunnels**: leave at `0` to match your CPU core count automatically. Set an explicit number only when you need to cap or boost tunnel fan-out.
+> ℹ️ **num_tunnels**: leave at `0` to auto-scale based on CPU count, but cap the default at `4` active tunnels. Set an explicit number only when you need fewer tunnels or deliberately boost fan-out.
 >
 > ℹ️ **pin_threads**: keeps each tunnel on a dedicated core (Linux/Unix). Disable only if your scheduler forbids manual affinity.
 >
@@ -387,10 +387,12 @@ Every release publishes optimized binaries for:
 | **Linux ARM64 (static)** | `floo-aarch64-linux-musl.tar.gz` | ARM containers and generic ARM64 hosts |
 | **macOS Apple Silicon** | `floo-aarch64-macos.tar.gz` | M1/M2/M3/M4 Macs |
 | **macOS Intel** | `floo-x86_64-macos.tar.gz` | Intel Macs |
+| **Windows x86_64** | `floo-x86_64-windows.zip` | Native PowerShell client manager |
 
 Download from [releases page](https://github.com/NTETV/floo/releases).
 
 macOS archives also ship `floo-macos.sh` for terminal-based instance management on user-level `launchd`.
+Windows archives also ship `floo-windows.ps1` for terminal-based client management without WSL or Git Bash.
 
 ---
 
@@ -409,9 +411,11 @@ Each instance gets its own config, PID/state record, stdout log, stderr log, and
 
 ### Quick start
 
-From this Windows release archive:
+From a Windows release archive:
 
 ```powershell
+Expand-Archive .\floo-x86_64-windows.zip -DestinationPath .
+cd .\floo-x86_64-windows
 powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 help
 ```
 
