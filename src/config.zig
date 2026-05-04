@@ -54,7 +54,7 @@ pub const AdvancedSettings = struct {
     heartbeat_timeout_seconds: u32 = 40,
 
     // Client-specific
-    num_tunnels: usize = 0, // 0 = auto (parallel connections)
+    num_tunnels: usize = 0, // 0 = auto (up to 4 active tunnels by default)
     hot_spare: bool = true, // maintain 1 extra pre-connected tunnel for instant failover
     reconnect_enabled: bool = true,
     reconnect_initial_delay_ms: u64 = 1000,
@@ -487,7 +487,7 @@ pub const ClientConfig = struct {
 
         // Validate num_tunnels
         if (self.advanced.num_tunnels == 0) {
-            std.debug.print("[CONFIG] Info: num_tunnels=0 → auto scale based on CPU count (min 4, max 64)\n", .{});
+            std.debug.print("[CONFIG] Info: num_tunnels=0 → auto scale based on CPU count with a default cap of 4 active tunnels\n", .{});
         } else {
             if (self.advanced.num_tunnels > 64) {
                 std.debug.print("[CONFIG] Warning: num_tunnels > 64 may cause excessive overhead\n", .{});

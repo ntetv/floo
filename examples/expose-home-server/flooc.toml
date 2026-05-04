@@ -16,7 +16,7 @@ jellyfin = "127.0.0.1:8096"
 
 [advanced]
 # Match tunnel fan-out to your CPU cores (override with >0 if needed)
-num_tunnels = 0
+num_tunnels = 0  # Auto, capped at 4 active tunnels
 
 # Keep tunnel threads on dedicated cores (Linux/Unix)
 pin_threads = true

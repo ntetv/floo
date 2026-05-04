@@ -660,7 +660,7 @@ fn sendTunnelPayload(conn: *anyopaque, buffer: []u8, payload_len: usize) anyerro
 fn effectiveTunnelCount(settings: *config.AdvancedSettings) usize {
     if (settings.num_tunnels > 0) return settings.num_tunnels;
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const clamped = math.clamp(cpu_count, 4, 64);
+    const clamped = math.clamp(cpu_count, 1, 4);
     settings.num_tunnels = clamped;
     return clamped;
 }

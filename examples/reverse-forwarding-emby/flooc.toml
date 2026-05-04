@@ -7,7 +7,7 @@ token = "emby-access-token"
 emby = "127.0.0.1:8096"
 
 [advanced]
-num_tunnels = 0  # Auto-match CPU cores
+num_tunnels = 0  # Auto, capped at 4 active tunnels
 pin_threads = true
 io_batch_bytes = 131072
 tcp_nodelay = true

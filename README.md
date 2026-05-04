@@ -327,14 +327,14 @@ voip = "10.0.0.30:5060/udp"
 ```toml
 [advanced]
 socket_buffer_size = 4194304      # 4MB buffers for high throughput
-num_tunnels = 0                   # 0 = auto based on CPU cores
+num_tunnels = 0                   # 0 = auto, capped at 4 active tunnels by default
 pin_threads = true                # Pin tunnel handlers to CPU cores
 io_batch_bytes = 131072           # Per-stream I/O buffer size
 tcp_nodelay = true                # Disable Nagle for lower latency
 heartbeat_interval_seconds = 30   # Keepalive frequency
 ```
 
-> ℹ️ **num_tunnels**: leave at `0` to match your CPU core count automatically. Set an explicit number only when you need to cap or boost tunnel fan-out.
+> ℹ️ **num_tunnels**: leave at `0` to auto-scale based on CPU count, but cap the default at `4` active tunnels. Set an explicit number only when you need fewer tunnels or deliberately boost fan-out.
 >
 > ℹ️ **pin_threads**: keeps each tunnel on a dedicated core (Linux/Unix). Disable only if your scheduler forbids manual affinity.
 >

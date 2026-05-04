@@ -38,7 +38,7 @@ starting the reverse listener.
 
 ## Hardening + tuning
 
-- Leave `num_tunnels = 0` to auto-scale with CPU cores; bump it only if you need
+- Leave `num_tunnels = 0` to auto-scale with a default cap of 4 active tunnels; bump it only if you need
   more dedicated tunnels than the hardware provides.
 - Bump `socket_buffer_size` beyond 512 KB when pushing 4K video across
   high-latency links.

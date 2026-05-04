@@ -30,7 +30,7 @@ Once the tunnel is up:
 
 ## Tips
 
-- Leave `num_tunnels = 0` to let Floo match your CPU cores automatically; set an
+- Leave `num_tunnels = 0` to let Floo auto-scale with a default cap of 4 active tunnels; set an
   explicit value (e.g. `num_tunnels = 4`) only when you want to cap or boost
   tunnel fan-out for specific workloads.
 - Add more sections under `[reverse_services]` to expose additional ports using

@@ -16,5 +16,5 @@ webapp = "127.0.0.1:8080"
 # database = "127.0.0.1:5432"
 
 [advanced]
-num_tunnels = 0
+num_tunnels = 0  # Auto, capped at 4 active tunnels
 pin_threads = true

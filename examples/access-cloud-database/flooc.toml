@@ -7,7 +7,7 @@ token = "database-access-token"
 postgres = "127.0.0.1:5432"
 
 [advanced]
-num_tunnels = 0  # Auto-match CPU cores
+num_tunnels = 0  # Auto, capped at 4 active tunnels
 pin_threads = true
 io_batch_bytes = 131072
 socket_buffer_size = 8388608

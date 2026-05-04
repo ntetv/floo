@@ -86,7 +86,7 @@ token = "PASTE_SAME_TOKEN_HERE"  # ← Must match server!
 jellyfin = "127.0.0.1:8096"      # Your local Jellyfin port
 
 [advanced]
-num_tunnels = 0                  # Auto-match CPU cores (set >0 to override)
+num_tunnels = 0                  # Auto, capped at 4 active tunnels (set >0 to override)
 pin_threads = true
 io_batch_bytes = 131072
 reconnect_enabled = true         # Auto-reconnect if connection drops
@@ -197,7 +197,7 @@ sudo systemctl start flooc
 | **Handshake failed** | Verify PSK and token match exactly on both sides |
 | **Can't access Jellyfin** | Ensure Jellyfin runs on 127.0.0.1:8096 locally |
 | **Tunnel disconnects** | `reconnect_enabled = true` in flooc.toml (already set) |
-| **Slow streaming** | Leave `num_tunnels = 0` (auto) and raise `socket_buffer_size` / `io_batch_bytes` for bigger bursts |
+| **Slow streaming** | Leave `num_tunnels = 0` (auto, capped at 4 active tunnels) and raise `socket_buffer_size` / `io_batch_bytes` for bigger bursts |
 | **Server refuses to start** | Replace placeholder credentials with real ones! |
 
 ### Debug Commands
@@ -251,7 +251,7 @@ For 4K streaming:
 ```toml
 [advanced]
 socket_buffer_size = 8388608     # 8MB buffers
-num_tunnels = 0                  # Auto-match CPU cores (set >0 to force)
+num_tunnels = 0                  # Auto, capped at 4 active tunnels (set >0 to force)
 pin_threads = true               # Keep tunnels on dedicated cores
 io_batch_bytes = 131072          # Larger per-stream batch
 tcp_nodelay = true               # Lower latency
