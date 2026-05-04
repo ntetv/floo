@@ -221,68 +221,6 @@ download_release_asset() {
     return 1
 }
 
-is_repo_checkout() {
-    [[ -f "$SCRIPT_DIR/build.zig" && -f "$SCRIPT_DIR/build.zig.zon" ]]
-}
-
-find_local_binary() {
-    local kind=$1
-    local name
-    local bundle_candidate
-    local repo_candidate
-
-    case $kind in
-        server) name="floos" ;;
-        client) name="flooc" ;;
-        *) return 1 ;;
-    esac
-
-    bundle_candidate="$SCRIPT_DIR/$name"
-    repo_candidate="$SCRIPT_DIR/zig-out/bin/$name"
-
-    if is_repo_checkout; then
-        [[ -x $repo_candidate ]] || return 1
-        printf '%s\n' "$repo_candidate"
-        return 0
-    fi
-
-    if [[ -x $bundle_candidate ]]; then
-        printf '%s\n' "$bundle_candidate"
-        return 0
-    fi
-
-    return 1
-}
-
-install_local_binaries() {
-    local install_kind=${1:-both}
-    local server_src=""
-    local client_src=""
-
-    case $install_kind in
-        server)
-            server_src=$(find_local_binary server) || return 1
-            install -m 755 "$server_src" "$FLOO_BIN_SERVER"
-            ;;
-        client)
-            client_src=$(find_local_binary client) || return 1
-            install -m 755 "$client_src" "$FLOO_BIN_CLIENT"
-            ;;
-        both)
-            server_src=$(find_local_binary server) || return 1
-            client_src=$(find_local_binary client) || return 1
-            install -m 755 "$server_src" "$FLOO_BIN_SERVER"
-            install -m 755 "$client_src" "$FLOO_BIN_CLIENT"
-            ;;
-        *)
-            error "未知安装类型：$install_kind"
-            return 1
-            ;;
-    esac
-
-    return 0
-}
-
 install_release_binaries() {
     local asset_name=$1
     local install_kind=${2:-both}
@@ -337,17 +275,13 @@ ensure_binaries_installed() {
 
     ensure_dirs
 
-    if install_local_binaries "$install_kind"; then
-        if is_repo_checkout; then
-            note "已从仓库 zig-out/bin 安装受管二进制。"
-        else
-            note "已从发布包内置二进制安装受管二进制。"
-        fi
+    asset_name=$(release_asset_name) || return 1
+    if install_release_binaries "$asset_name" "$install_kind"; then
+        note "已从 GitHub latest release 下载并安装受管二进制。"
         return 0
     fi
 
-    asset_name=$(release_asset_name) || return 1
-    install_release_binaries "$asset_name" "$install_kind"
+    return 1
 }
 
 install_or_update_binaries() {

@@ -1756,13 +1756,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // Bind reverse services only once to the first healthy tunnel. If that
         // tunnel later drops, the reap loop rebinds the listeners to another
-        // already-connected tunnel (including a promoted hot spare).
+        // already-connected tunnel (including a promoted hot spare). When all
+        // tunnels are gone and a client later reconnects, reuse the existing
+        // listeners instead of binding the ports again.
         if (cfg.reverse_services.count() > 0 and reverse_listeners_conn == null) {
-            bindReverseListeners(allocator, &cfg, tunnel_conn, &reverse_listeners);
-
             if (reverse_listeners.items.len > 0) {
+                rebindReverseListeners(&reverse_listeners, tunnel_conn);
                 reverse_listeners_conn = tunnel_conn;
-                std.debug.print("[REVERSE] Reverse services bound to current tunnel connection\n", .{});
+                std.debug.print("[REVERSE] Existing reverse listeners rebound to reconnected tunnel connection\n", .{});
+            } else {
+                bindReverseListeners(allocator, &cfg, tunnel_conn, &reverse_listeners);
+
+                if (reverse_listeners.items.len > 0) {
+                    reverse_listeners_conn = tunnel_conn;
+                    std.debug.print("[REVERSE] Reverse services bound to current tunnel connection\n", .{});
+                }
             }
         }
     }

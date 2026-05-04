@@ -7,6 +7,8 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     exit 1
 }
 
+$Script:GitHubRepo = 'ntetv/floo'
+$Script:ReleaseBaseUrl = "https://gh.5ieee.com/github.com/$Script:GitHubRepo/releases/latest/download"
 $Script:ScriptPath = $PSCommandPath
 $Script:ScriptDir = Split-Path -Parent $Script:ScriptPath
 $Script:AppRoot = Join-Path $env:LOCALAPPDATA 'Floo'
@@ -90,6 +92,60 @@ function ConvertFrom-Base64Url {
 
     $bytes = [Convert]::FromBase64String($normalized)
     return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+function Get-ReleaseAssetName {
+    if ([Environment]::Is64BitOperatingSystem) {
+        return 'floo-x86_64-windows.zip'
+    }
+
+    Fail '当前 Windows 架构不受支持。'
+}
+
+function Download-ReleaseAsset {
+    param(
+        [string]$AssetName,
+        [string]$OutputPath
+    )
+
+    $url = "$Script:ReleaseBaseUrl/$AssetName"
+    Write-Note "正在从 GitHub latest release 下载：$AssetName"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $OutputPath -UseBasicParsing
+    }
+    catch {
+        Fail "下载 $AssetName 失败。"
+    }
+}
+
+function Install-ReleaseClientBinary {
+    Ensure-Directories
+
+    $assetName = Get-ReleaseAssetName
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+    try {
+        $archivePath = Join-Path $tempDir $assetName
+        Download-ReleaseAsset -AssetName $assetName -OutputPath $archivePath
+
+        $extractDir = Join-Path $tempDir 'extract'
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+
+        $clientBinary = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'flooc.exe' -File | Select-Object -First 1 -ExpandProperty FullName
+        if ([string]::IsNullOrWhiteSpace($clientBinary)) {
+            Fail '发布归档中未找到 flooc.exe。'
+        }
+
+        Copy-Item -LiteralPath $clientBinary -Destination $Script:ManagedClientBin -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempDir) {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force
+        }
+    }
+
+    return $Script:ManagedClientBin
 }
 
 function Get-JsonString {
@@ -299,23 +355,6 @@ function Assert-ClientInstance {
     }
 }
 
-function Get-ClientBinarySource {
-    $candidates = @(
-        (Join-Path $Script:ScriptDir 'flooc.exe'),
-        (Join-Path $Script:ScriptDir 'zig-out\bin\flooc.exe'),
-        (Join-Path $Script:ScriptDir 'zig-out\release\x86_64-windows\flooc.exe'),
-        $Script:ManagedClientBin
-    )
-
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate) {
-            return $candidate
-        }
-    }
-
-    return $null
-}
-
 function Ensure-ManagedScript {
     Ensure-Directories
     if ($Script:ScriptPath -ne $Script:ManagedScriptPath) {
@@ -326,13 +365,9 @@ function Ensure-ManagedScript {
 
 function Ensure-ClientBinary {
     Ensure-Directories
-    $source = Get-ClientBinarySource
-    if ([string]::IsNullOrWhiteSpace($source)) {
-        Fail '未找到 flooc.exe。请将 flooc.exe 放在 floo-windows.ps1 同目录，或从 Windows release zip 运行。'
-    }
 
-    if (-not (Test-Path -LiteralPath $Script:ManagedClientBin) -or $source -ne $Script:ManagedClientBin) {
-        Copy-Item -LiteralPath $source -Destination $Script:ManagedClientBin -Force
+    if (-not (Test-Path -LiteralPath $Script:ManagedClientBin)) {
+        return (Install-ReleaseClientBinary)
     }
 
     return $Script:ManagedClientBin

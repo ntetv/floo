@@ -12,6 +12,7 @@ All notable changes to Floo will be documented in this file.
 ### Changed
 - Upgraded the project to Zig 0.16.0 stable for current builds and release packaging, including Windows builds.
 - Reworked reverse listener failover to rebind listeners to a healthy tunnel instead of recreating them on every reconnect.
+- Reused existing reverse listeners when a fully disconnected client later reconnects, avoiding `AddressInUse` and stale reverse ports after tunnel recovery.
 - Consolidated Windows socket, poll, sleep, and socket-option compatibility in the shared networking layer.
 - Reduced default reverse-mode log noise by moving high-frequency happy-path tunnel chatter into concise event-style status output while keeping failure logs readable.
 - Refreshed all 5 checked-in release bundles so `release-assets/` and the GitHub Release attachments match the rebuilt binaries.
@@ -19,6 +20,8 @@ All notable changes to Floo will be documented in this file.
 
 ### Fixed
 - Fixed reverse tunnel instability triggered by multi-tunnel reconnect and listener rebinding races.
+- Fixed macOS manager reinstall paths that could accidentally reuse stale local binaries instead of fetching the latest GitHub release payload.
+- Fixed Windows manager installation to pull managed client binaries from the latest GitHub release instead of depending on local bundle files.
 - Fixed Windows x86_64 cross-compilation issues under Zig 0.16.0.
 - Fixed noisy disconnect handling for expected tunnel reset/failover paths.
 - Fixed misleading config-file-missing handling so startup now returns `FileNotFound` directly instead of falling back to defaults and surfacing a bogus `WeakPSK` error.
