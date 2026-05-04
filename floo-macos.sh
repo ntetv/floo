@@ -221,10 +221,15 @@ download_release_asset() {
     return 1
 }
 
+is_repo_checkout() {
+    [[ -f "$SCRIPT_DIR/build.zig" && -f "$SCRIPT_DIR/build.zig.zon" ]]
+}
+
 find_local_binary() {
     local kind=$1
     local name
-    local candidate
+    local bundle_candidate
+    local repo_candidate
 
     case $kind in
         server) name="floos" ;;
@@ -232,15 +237,19 @@ find_local_binary() {
         *) return 1 ;;
     esac
 
-    for candidate in \
-        "$SCRIPT_DIR/$name" \
-        "$SCRIPT_DIR/zig-out/bin/$name"
-    do
-        if [[ -x $candidate ]]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
+    bundle_candidate="$SCRIPT_DIR/$name"
+    repo_candidate="$SCRIPT_DIR/zig-out/bin/$name"
+
+    if is_repo_checkout; then
+        [[ -x $repo_candidate ]] || return 1
+        printf '%s\n' "$repo_candidate"
+        return 0
+    fi
+
+    if [[ -x $bundle_candidate ]]; then
+        printf '%s\n' "$bundle_candidate"
+        return 0
+    fi
 
     return 1
 }
@@ -329,7 +338,11 @@ ensure_binaries_installed() {
     ensure_dirs
 
     if install_local_binaries "$install_kind"; then
-        note "已从脚本同目录的本地文件安装受管二进制。"
+        if is_repo_checkout; then
+            note "已从仓库 zig-out/bin 安装受管二进制。"
+        else
+            note "已从发布包内置二进制安装受管二进制。"
+        fi
         return 0
     fi
 
