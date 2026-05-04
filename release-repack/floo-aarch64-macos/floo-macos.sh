@@ -337,6 +337,52 @@ ensure_binaries_installed() {
     install_release_binaries "$asset_name" "$install_kind"
 }
 
+install_or_update_binaries() {
+    local opt
+
+    echo "1. 安装/更新服务端 (floos)"
+    echo "2. 安装/更新客户端 (flooc)"
+    echo "3. 安装/更新全部"
+    read -r -p "请选择 [1-3，默认 3]：" opt
+
+    case $opt in
+        1) ensure_binaries_installed server || return 1 ;;
+        2) ensure_binaries_installed client || return 1 ;;
+        3|"") ensure_binaries_installed both || return 1 ;;
+        *) error "无效选择。"; return 1 ;;
+    esac
+
+    success "受管二进制安装/更新完成。"
+}
+
+uninstall_managed_data() {
+    local confirm
+    local id
+    local kind
+
+    read -r -p "确认彻底卸载 Floo 受管数据、二进制、日志和自启动？[y/N]：" confirm
+    [[ $confirm == "y" ]] || return 0
+
+    if list_instances >/dev/null 2>&1; then
+        for id in $(list_instance_ids); do
+            kind=$(kind_for_id "$id")
+            disable_autostart_instance "$kind" "$id" >/dev/null 2>&1 || true
+            stop_instance "$kind" "$id" >/dev/null 2>&1 || true
+        done
+    fi
+
+    rm -f "$FLOO_BIN_SERVER" "$FLOO_BIN_CLIENT"
+    rm -rf "$FLOO_CONF_DIR" "$FLOO_PLIST_DIR" "$FLOO_BIN_DIR" "$FLOO_LOG_DIR"
+
+    if [[ -d $FLOO_LAUNCH_AGENTS_DIR ]]; then
+        rm -f "$FLOO_LAUNCH_AGENTS_DIR"/com.ntetv.floo.*.plist
+    fi
+
+    rmdir "$FLOO_APP_SUPPORT_DIR" 2>/dev/null || true
+
+    success "Floo 受管数据已彻底卸载。"
+}
+
 binary_path_for_kind() {
     if [[ $1 == "server" ]]; then
         printf '%s\n' "$FLOO_BIN_SERVER"
@@ -1280,6 +1326,28 @@ toggle_autostart_all() {
     done
 }
 
+prompt_log_target() {
+    local id
+
+    echo "1. 查看指定实例日志"
+    echo "2. 查看全部 Floo 日志"
+    read -r -p "请选择 [1-2，默认 2]：" opt
+
+    case $opt in
+        1)
+            read -r -p "实例 ID：" id
+            show_logs "$id"
+            ;;
+        2|"")
+            show_logs ""
+            ;;
+        *)
+            error "无效选择。"
+            return 1
+            ;;
+    esac
+}
+
 show_help() {
     cat <<'EOF'
 用法：
@@ -1380,6 +1448,30 @@ handle_autostart_command() {
     fi
 }
 
+prompt_autostart_toggle() {
+    local opt
+    local id
+
+    echo "1. 启用登录自启动"
+    echo "2. 禁用登录自启动"
+    read -r -p "请选择 [1-2]：" opt
+
+    case $opt in
+        1)
+            read -r -p "实例 ID（或 --all）:" id
+            handle_autostart_command enable "$id" && success "已启用开机自启。"
+            ;;
+        2)
+            read -r -p "实例 ID（或 --all）:" id
+            handle_autostart_command disable "$id" && success "已禁用开机自启。"
+            ;;
+        *)
+            error "无效选择。"
+            return 1
+            ;;
+    esac
+}
+
 if is_command_mode "$@"; then
     case $1 in
         add)
@@ -1437,42 +1529,27 @@ while true; do
     show_status
     echo "Floo macOS launchd 管理脚本"
     echo "========================================"
-    echo "1. 添加实例"
-    echo "2. 删除实例"
-    echo "3. 启动实例"
-    echo "4. 停止实例"
+    echo "1. 安装更新"
+    echo "2. 卸载删除"
+    echo "3. 添加实例"
+    echo "4. 删除实例"
     echo "5. 重启实例"
-    echo "6. 查看日志"
-    echo "7. 列出实例"
-    echo "8. 启用登录自启动"
-    echo "9. 禁用登录自启动"
+    echo "6. 停止实例"
+    echo "7. 查看日志"
+    echo "8. 开机启动"
     echo "0. 退出"
     echo "========================================"
-    read -r -p "请选择 [0-9]：" main_opt
+    read -r -p "请选择 [0-8]：" main_opt
 
     case $main_opt in
-        1) do_add ;;
-        2) do_delete ;;
-        3) do_ctrl start ;;
-        4) do_ctrl stop ;;
+        1) install_or_update_binaries ;;
+        2) uninstall_managed_data ;;
+        3) do_add ;;
+        4) do_delete ;;
         5) do_ctrl restart ;;
-        6)
-            read -r -p "实例 ID（留空查看全部 Floo 日志）：" id
-            show_logs "$id"
-            ;;
-        7)
-            if ! list_instances; then
-                note "未找到任何实例。"
-            fi
-            ;;
-        8)
-            read -r -p "实例 ID（或 --all）：" id
-            handle_autostart_command enable "$id" && success "已启用开机自启。"
-            ;;
-        9)
-            read -r -p "实例 ID（或 --all）：" id
-            handle_autostart_command disable "$id" && success "已禁用开机自启。"
-            ;;
+        6) do_ctrl stop ;;
+        7) prompt_log_target ;;
+        8) prompt_autostart_toggle ;;
         0) exit 0 ;;
         *) error "无效选项。" ;;
     esac
