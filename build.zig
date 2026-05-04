@@ -172,7 +172,7 @@ pub fn build(b: *std.Build) void {
             .os_tag = .linux,
             .abi = .musl,
         } },
-        .{ .name = "aarch64-macos-m1", .query = .{
+        .{ .name = "aarch64-macos", .query = .{
             .cpu_arch = .aarch64,
             .os_tag = .macos,
         }, .cpu = "apple_m1" },

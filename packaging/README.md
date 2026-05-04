@@ -9,12 +9,12 @@ This directory contains package manager configurations for distributing Floo.
 1. **Create a tap repository** (one-time setup):
    ```bash
    # Create a new GitHub repo named "homebrew-floo"
-   # Repository URL will be: https://github.com/YUX/homebrew-floo
+   # Repository URL will be: https://github.com/NTETV/homebrew-floo
    ```
 
 2. **Populate the tap**:
    ```bash
-   git clone https://github.com/YUX/homebrew-floo
+   git clone https://github.com/NTETV/homebrew-floo
    cd homebrew-floo
    mkdir -p Formula
    cp packaging/homebrew/floo.rb Formula/
@@ -26,19 +26,19 @@ This directory contains package manager configurations for distributing Floo.
 3. **Update SHA256 checksums** after each release:
    ```bash
    # Download release artifacts
-   wget https://github.com/YUX/floo/releases/download/v0.1.2/floo-aarch64-macos-m1.tar.gz
-   wget https://github.com/YUX/floo/releases/download/v0.1.2/floo-x86_64-macos-haswell.tar.gz
+   wget https://github.com/NTETV/floo/releases/download/v0.1.6/floo-aarch64-macos.tar.gz
+   wget https://github.com/NTETV/floo/releases/download/v0.1.6/floo-x86_64-macos.tar.gz
 
    # Calculate checksums
-   shasum -a 256 floo-aarch64-macos-m1.tar.gz
-   shasum -a 256 floo-x86_64-macos-haswell.tar.gz
+   shasum -a 256 floo-aarch64-macos.tar.gz
+   shasum -a 256 floo-x86_64-macos.tar.gz
 
    # Update Formula/floo.rb with the checksums
    ```
 
 4. **Users install with**:
    ```bash
-   brew tap YUX/floo
+   brew tap NTETV/floo
    brew install floo
    ```
 
@@ -70,12 +70,12 @@ Submit a PR to [homebrew-core](https://github.com/Homebrew/homebrew-core):
    cp packaging/aur/PKGBUILD .
 
    # Download release artifacts to calculate checksums
-   wget https://github.com/YUX/floo/releases/download/v0.1.2/floo-x86_64-linux-gnu-haswell.tar.gz
-   wget https://github.com/YUX/floo/releases/download/v0.1.2/floo-aarch64-linux-gnu.tar.gz
+   wget https://github.com/NTETV/floo/releases/download/v0.1.6/floo-x86_64-linux-musl.tar.gz
+   wget https://github.com/NTETV/floo/releases/download/v0.1.6/floo-aarch64-linux-musl.tar.gz
 
    # Calculate checksums
-   sha256sum floo-x86_64-linux-gnu-haswell.tar.gz
-   sha256sum floo-aarch64-linux-gnu.tar.gz
+   sha256sum floo-x86_64-linux-musl.tar.gz
+   sha256sum floo-aarch64-linux-musl.tar.gz
 
    # Update PKGBUILD with checksums and version
 
@@ -84,7 +84,7 @@ Submit a PR to [homebrew-core](https://github.com/Homebrew/homebrew-core):
 
    # Commit and push
    git add PKGBUILD .SRCINFO
-   git commit -m "Update to version 0.1.2"
+   git commit -m "Update to version 0.1.6"
    git push
    ```
 
@@ -143,8 +143,8 @@ gh workflow run publish-apt.yml -f version=0.1.2
 
 **Users install with:**
 ```bash
-curl -fsSL https://yux.github.io/floo-apt/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/floo.gpg
-echo 'deb [signed-by=/usr/share/keyrings/floo.gpg] https://yux.github.io/floo-apt stable main' | sudo tee /etc/apt/sources.list.d/floo.list
+curl -fsSL https://ntetv.github.io/floo-apt/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/floo.gpg
+echo 'deb [signed-by=/usr/share/keyrings/floo.gpg] https://ntetv.github.io/floo-apt stable main' | sudo tee /etc/apt/sources.list.d/floo.list
 sudo apt update
 sudo apt install floo
 ```

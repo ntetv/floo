@@ -13,7 +13,7 @@ if [ -z "$1" ]; then
 fi
 
 VERSION=$1
-BASE_URL="https://github.com/YUX/floo/releases/download/${VERSION}"
+BASE_URL="https://github.com/NTETV/floo/releases/download/${VERSION}"
 
 # Create temp directory
 TEMP_DIR=$(mktemp -d)
@@ -23,15 +23,10 @@ echo "Downloading release artifacts for $VERSION..."
 echo ""
 
 ARTIFACTS=(
-    floo-x86_64-linux-gnu.tar.gz
-    floo-x86_64-linux-gnu-haswell.tar.gz
     floo-x86_64-linux-musl.tar.gz
-    floo-aarch64-linux-gnu.tar.gz
-    floo-aarch64-linux-gnu-neoverse-n1.tar.gz
-    floo-aarch64-linux-gnu-rpi4.tar.gz
+    floo-aarch64-linux-musl.tar.gz
     floo-x86_64-macos.tar.gz
-    floo-x86_64-macos-haswell.tar.gz
-    floo-aarch64-macos-m1.tar.gz
+    floo-aarch64-macos.tar.gz
 )
 
 for artifact in "${ARTIFACTS[@]}"; do

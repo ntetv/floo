@@ -182,4 +182,4 @@ The snap runs in a confined environment. Ensure no other services are using the 
 ## Learn More
 
 - [Snapcraft Documentation](https://snapcraft.io/docs)
-- [Floo Documentation](https://github.com/YUX/floo)
+- [Floo Documentation](https://github.com/NTETV/floo)

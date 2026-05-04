@@ -30,15 +30,11 @@ jobs:
       - name: Package artifacts
         env:
           RELEASE_TARGETS: |
-            x86_64-linux-gnu
-            x86_64-linux-gnu-haswell
             x86_64-linux-musl
-            aarch64-linux-gnu
-            aarch64-linux-gnu-neoverse-n1
-            aarch64-linux-gnu-rpi4
+            aarch64-linux-musl
             x86_64-macos
-            x86_64-macos-haswell
-            aarch64-macos-m1
+            aarch64-macos
+            x86_64-windows
         run: |
           set -euo pipefail
           mkdir -p release-assets
@@ -62,6 +58,9 @@ jobs:
             cp README.md "dist/${target}/"
             cp configs/flooc.example.toml "dist/${target}/flooc.toml.example"
             cp configs/floos.example.toml "dist/${target}/floos.toml.example"
+            if [[ "$target" == *"macos"* ]]; then
+              cp floo-macos.sh "dist/${target}/"
+            fi
 
             if [[ "$target" == *"windows"* ]]; then
               (cd dist && zip -rq "../release-assets/floo-${target}.zip" "${target}")
@@ -108,15 +107,10 @@ jobs:
 
           | Platform | File | Recommended For |
           |----------|------|-----------------|
-          | **Linux x86_64 (glibc)** | \`floo-x86_64-linux-gnu.tar.gz\` | Generic compatibility |
-          | **Linux x86_64 (Haswell+)** | \`floo-x86_64-linux-gnu-haswell.tar.gz\` | Modern Intel/AMD (AES-NI) |
           | **Linux x86_64 (musl)** | \`floo-x86_64-linux-musl.tar.gz\` | Alpine/static containers |
-          | **Linux ARM64 (generic)** | \`floo-aarch64-linux-gnu.tar.gz\` | ARM servers and SBCs |
-          | **Linux ARM64 (Neoverse)** | \`floo-aarch64-linux-gnu-neoverse-n1.tar.gz\` | AWS Graviton / Ampere |
-          | **Linux ARM64 (Raspberry Pi 4/5)** | \`floo-aarch64-linux-gnu-rpi4.tar.gz\` | Pi 4/5 tuned |
-          | **macOS Apple Silicon** | \`floo-aarch64-macos-m1.tar.gz\` | M-series Macs |
-          | **macOS Intel** | \`floo-x86_64-macos.tar.gz\` | Legacy Intel Macs |
-          | **macOS Intel (Haswell+)** | \`floo-x86_64-macos-haswell.tar.gz\` | Best perf on 2013+ Macs |
+          | **Linux ARM64 (musl)** | \`floo-aarch64-linux-musl.tar.gz\` | ARM64 containers and generic hosts |
+          | **macOS Apple Silicon** | \`floo-aarch64-macos.tar.gz\` | M-series Macs |
+          | **macOS Intel** | \`floo-x86_64-macos.tar.gz\` | Intel Macs |
 
           ### ⚠️ Note
 

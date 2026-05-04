@@ -49,7 +49,7 @@ jobs:
     name: Publish to APT Repository
     runs-on: ubuntu-latest
     needs: build-deb
-    if: github.repository == 'YUX/floo' # Only run on main repo
+    if: github.repository == 'NTETV/floo' # Only run on main repo
 
     steps:
       - name: Checkout code
@@ -64,7 +64,7 @@ jobs:
       - name: Checkout APT repository
         uses: actions/checkout@v4
         with:
-          repository: YUX/floo-apt  # Change to your APT repo
+          repository: NTETV/floo-apt  # Change to your APT repo
           path: apt-repo
           token: ${{ secrets.APT_REPO_TOKEN }}  # Personal access token with repo write
 
@@ -156,8 +156,8 @@ jobs:
 
           ```bash
           # Add repository
-          curl -fsSL https://yux.github.io/floo-apt/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/floo.gpg
-          echo 'deb [signed-by=/usr/share/keyrings/floo.gpg] https://yux.github.io/floo-apt stable main' | sudo tee /etc/apt/sources.list.d/floo.list
+          curl -fsSL https://ntetv.github.io/floo-apt/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/floo.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/floo.gpg] https://ntetv.github.io/floo-apt stable main' | sudo tee /etc/apt/sources.list.d/floo.list
 
           # Update and install
           sudo apt update
@@ -182,7 +182,7 @@ jobs:
 
           ## Documentation
 
-          See [main repository](https://github.com/YUX/floo) for complete documentation.
+          See [main repository](https://github.com/NTETV/floo) for complete documentation.
           EOF
 
       - name: Commit and push

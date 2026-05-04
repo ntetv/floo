@@ -1,0 +1,145 @@
+# ============================================================================
+# Floo Server Configuration (floos.toml)
+# ============================================================================
+#
+# This is the SERVER component that runs on your public VPS or relay server.
+# Clients (flooc) connect to this server to establish encrypted tunnels.
+#
+# Quick Start:
+# 1. Generate strong credentials:
+#    openssl rand -base64 32  # For PSK
+#    openssl rand -base64 24  # For token
+#
+# 2. Replace the placeholder values below with your generated credentials
+#
+# 3. Define your services (forward mode) or reverse_services (reverse mode)
+#
+# 4. Run: ./floos floos.toml
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Core Server Settings (REQUIRED)
+# ----------------------------------------------------------------------------
+
+bind = "0.0.0.0"        # Listen on all interfaces (use "127.0.0.1" for local only)
+port = 8443             # Port for tunnel connections (clients connect here)
+
+# ----------------------------------------------------------------------------
+# Security Settings (REQUIRED - REPLACE THESE!)
+# ----------------------------------------------------------------------------
+
+# Cipher: Choose based on your CPU
+#   - aes256gcm (recommended): Fast on modern CPUs with AES-NI
+#   - aegis128l: Fastest on ARMv8+ and modern x86 (22+ Gbps)
+#   - chacha20poly1305: Best for older CPUs without AES-NI
+#   - aes128gcm: Faster than aes256gcm, still secure
+cipher = "aes256gcm"
+
+# PSK (Pre-Shared Key): MUST be strong and random!
+# Generate with: openssl rand -base64 32
+# ⚠️  NEVER use the placeholder below - the server will refuse to start!
+psk = "REPLACE_WITH_OPENSSL_RAND_BASE64_32_OUTPUT"
+
+# Default token: Used for service authentication
+# Generate with: openssl rand -base64 24
+# ⚠️  NEVER use the placeholder below - the server will refuse to start!
+token = "REPLACE_WITH_OPENSSL_RAND_BASE64_24_OUTPUT"
+
+# ----------------------------------------------------------------------------
+# Forward Mode Services
+# ----------------------------------------------------------------------------
+# Forward mode: Clients connect through the tunnel to reach these targets.
+# Format: service_name = "target_host:port[/transport]"
+#
+# Example use case: Allow remote access to internal/private networks
+# ----------------------------------------------------------------------------
+
+[services]
+# Example: Expose internal API server
+# Clients will connect to this through the tunnel
+# api = "10.0.0.10:8080"
+
+# Example: PostgreSQL database in private subnet
+# database = "10.0.0.20:5432"
+# database.token = "unique-db-token-here"  # Optional: per-service token
+
+# Example: Internal Kubernetes dashboard
+# k8s_dashboard = "192.168.1.100:8443"
+
+# Example: UDP service (DNS, VoIP, etc.)
+# dns = "10.0.0.53:53/udp"
+
+# ----------------------------------------------------------------------------
+# Reverse Mode Services
+# ----------------------------------------------------------------------------
+# Reverse mode: Accept connections from clients and expose them publicly
+# Format: service_name = "bind_host:port[/transport]"
+#
+# Example use case: Share home services without port forwarding/dynamic DNS
+# ----------------------------------------------------------------------------
+
+[reverse_services]
+# Example: Accept media server connections from home
+# Friends can access http://your-vps-ip:8096
+# media = "0.0.0.0:8096"
+
+# Example: SSH access to home machines
+# ssh = "0.0.0.0:2222"
+# ssh.token = "unique-ssh-token-here"  # Recommended for sensitive services
+
+# Example: Home security camera streams
+# camera = "0.0.0.0:5000/udp"
+
+# ----------------------------------------------------------------------------
+# Advanced Performance Tuning (OPTIONAL)
+# ----------------------------------------------------------------------------
+# Only modify these if you understand the implications
+# Default values work well for most deployments
+# ----------------------------------------------------------------------------
+
+[advanced]
+# Socket buffer size in bytes (default: 8MB)
+# Increase for high-bandwidth connections (e.g., 16777216 for 16MB)
+socket_buffer_size = 8388608
+
+# UDP session timeout in seconds (default: 60)
+# How long to keep UDP "connections" alive without traffic
+udp_timeout_seconds = 60
+
+# Pin worker threads to dedicated CPU cores (Linux/Unix)
+pin_threads = true
+
+# Per-stream IO buffer size (in bytes)
+io_batch_bytes = 131072
+
+# TCP optimization settings
+tcp_nodelay = true                      # Disable Nagle's algorithm (lower latency)
+tcp_keepalive = true                    # Enable TCP keepalive
+tcp_keepalive_idle = 45                 # Seconds before first keepalive probe
+tcp_keepalive_interval = 10             # Seconds between keepalive probes
+tcp_keepalive_count = 3                 # Number of failed probes before timeout
+
+# Heartbeat settings (detect dead connections)
+heartbeat_interval_seconds = 30         # How often to send heartbeats
+heartbeat_timeout_seconds = 60          # Consider connection dead after this
+
+# ----------------------------------------------------------------------------
+# Security Best Practices
+# ----------------------------------------------------------------------------
+#
+# ✅ DO:
+#   - Use strong random credentials (openssl rand -base64)
+#   - Use different tokens for different services
+#   - Rotate credentials periodically
+#   - Use per-service tokens for sensitive services (database, ssh)
+#   - Monitor connection logs
+#
+# ❌ DON'T:
+#   - Use weak or default credentials (server will refuse to start)
+#   - Commit credentials to version control
+#   - Share credentials over unsecured channels
+#   - Use cipher = "none" in production (debugging only!)
+#   - Bind reverse_services to 0.0.0.0 unless you want public access
+#
+# ----------------------------------------------------------------------------

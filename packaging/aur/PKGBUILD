@@ -1,17 +1,17 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=floo
-pkgver=0.1.2
+pkgver=0.1.6
 pkgrel=1
 pkgdesc="Secure, high-performance tunneling in Zig. Expose your home services or access remote ones"
 arch=('x86_64' 'aarch64')
-url="https://github.com/YUX/floo"
+url="https://github.com/NTETV/floo"
 license=('MIT')
 provides=('floo' 'flooc' 'floos')
 conflicts=('floo-git')
-source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.gz::https://github.com/YUX/floo/releases/download/v${pkgver}/floo-x86_64-linux-gnu-haswell.tar.gz")
-source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.gz::https://github.com/YUX/floo/releases/download/v${pkgver}/floo-aarch64-linux-gnu.tar.gz")
-sha256sums_x86_64=('4087230211f3064c3644eb8cad115c94bfa34bc682c07191ea11228f3cd09a66')
-sha256sums_aarch64=('5f0c75550c0bb18fa72d547bc044d28f0eeefedbe399c1903ac06975c679a031')
+source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.gz::https://github.com/NTETV/floo/releases/download/v${pkgver}/floo-x86_64-linux-musl.tar.gz")
+source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.gz::https://github.com/NTETV/floo/releases/download/v${pkgver}/floo-aarch64-linux-musl.tar.gz")
+sha256sums_x86_64=('ce0e86f031e76c82cecf8cff95c44c5203f70f5a14aa045f9d25885d518339ca')
+sha256sums_aarch64=('f806457ed43c5746b3c32224085b9a9b7241e65bbac5125703a4d4833a0c3886')
 
 package() {
     cd "${srcdir}/${pkgname}-${pkgver}-${CARCH}"
