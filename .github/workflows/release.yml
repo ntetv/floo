@@ -88,6 +88,9 @@ jobs:
             if [[ "$target" == *"macos"* ]]; then
               cp floo-macos.sh "$out_dir/"
             fi
+            if [[ "$target" == *"windows"* ]]; then
+              cp floo-windows.ps1 "$out_dir/"
+            fi
 
             cp README.md "$out_dir/"
             cp configs/flooc.example.toml "$out_dir/flooc.toml.example"
@@ -157,7 +160,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: release-assets/*.tar.gz
+          files: |
+            release-assets/*.tar.gz
+            release-assets/*.zip
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -196,8 +201,9 @@ jobs:
             | **Linux ARM64 (static)** | `floo-aarch64-linux-musl.tar.gz` | ARM containers and generic ARM64 hosts |
             | **macOS Intel** | `floo-x86_64-macos.tar.gz` | macOS 11+ universal baseline |
             | **macOS Apple Silicon** | `floo-aarch64-macos.tar.gz` | M1/M2/M3/M4 with ARMv8 crypto |
+            | **Windows x86_64** | `floo-x86_64-windows.zip` | Native PowerShell workflow with `floo-windows.ps1` |
 
-            ⚡ **Recommended:** Native macOS bundles and static Linux bundles cover the officially published release set.
+            ⚡ **Recommended:** Native macOS bundles, static Linux bundles, and the Windows PowerShell zip cover the officially published release set.
 
             **Extract and use:**
             ```bash
@@ -205,6 +211,12 @@ jobs:
             cd floo-*/
             ./flooc --version
             ./floos --version
+            ```
+
+            **Windows PowerShell manager:**
+            ```powershell
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 help
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 import-client --preset=... --client-target=127.0.0.1:1080
             ```
 
             **macOS terminal manager:**

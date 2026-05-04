@@ -61,6 +61,9 @@ jobs:
             if [[ "$target" == *"macos"* ]]; then
               cp floo-macos.sh "dist/${target}/"
             fi
+            if [[ "$target" == *"windows"* ]]; then
+              cp floo-windows.ps1 "dist/${target}/"
+            fi
 
             if [[ "$target" == *"windows"* ]]; then
               (cd dist && zip -rq "../release-assets/floo-${target}.zip" "${target}")
@@ -111,6 +114,7 @@ jobs:
           | **Linux ARM64 (musl)** | \`floo-aarch64-linux-musl.tar.gz\` | ARM64 containers and generic hosts |
           | **macOS Apple Silicon** | \`floo-aarch64-macos.tar.gz\` | M-series Macs |
           | **macOS Intel** | \`floo-x86_64-macos.tar.gz\` | Intel Macs |
+          | **Windows x86_64** | \`floo-x86_64-windows.zip\` | Native PowerShell workflow |
 
           ### ⚠️ Note
 
