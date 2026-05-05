@@ -157,21 +157,7 @@ json_get_string() {
     local key=$2
     local value
 
-    value=$(JSON_PAYLOAD="$json" python3 - "$key" <<'PY'
-import json
-import os
-import sys
-
-key = sys.argv[1]
-try:
-    data = json.loads(os.environ["JSON_PAYLOAD"])
-except Exception:
-    sys.exit(1)
-value = data.get(key, "")
-if isinstance(value, (str, int, float)):
-    print(value)
-PY
-) || return 1
+    value=$(printf '%s' "$json" | jq -er --arg key "$key" '.[$key] | select(type == "string" or type == "number")') || return 1
 
     printf '%s\n' "$value"
 }
@@ -1038,8 +1024,8 @@ handle_import_client() {
         return 1
     fi
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        error "解析 --preset 需要安装 python3。"
+    if ! command -v jq >/dev/null 2>&1; then
+        error "缺少 jq 环境，请安装 brew install jq ."
         return 1
     fi
 

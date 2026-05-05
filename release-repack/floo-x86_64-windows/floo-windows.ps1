@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
-    Write-Error 'floo-windows.ps1 仅支持在 Windows 上运行。'
+    Write-Error 'floo-windows.ps1 only supports Windows.'
     exit 1
 }
 
@@ -87,7 +87,7 @@ function ConvertFrom-Base64Url {
         0 { }
         2 { $normalized += '==' }
         3 { $normalized += '=' }
-        default { Fail '无效的 base64url 预设。' }
+        default { Fail 'Invalid base64url preset.' }
     }
 
     $bytes = [Convert]::FromBase64String($normalized)
@@ -99,7 +99,7 @@ function Get-ReleaseAssetName {
         return 'floo-x86_64-windows.zip'
     }
 
-    Fail '当前 Windows 架构不受支持。'
+    Fail 'Current Windows architecture is not supported.'
 }
 
 function Download-ReleaseAsset {
@@ -109,12 +109,12 @@ function Download-ReleaseAsset {
     )
 
     $url = "$Script:ReleaseBaseUrl/$AssetName"
-    Write-Note "正在从 GitHub latest release 下载：$AssetName"
+    Write-Note "Downloading from GitHub latest release: $AssetName"
     try {
         Invoke-WebRequest -Uri $url -OutFile $OutputPath -UseBasicParsing
     }
     catch {
-        Fail "下载 $AssetName 失败。"
+        Fail "Failed to download $AssetName."
     }
 }
 
@@ -134,7 +134,7 @@ function Install-ReleaseClientBinary {
 
         $clientBinary = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'flooc.exe' -File | Select-Object -First 1 -ExpandProperty FullName
         if ([string]::IsNullOrWhiteSpace($clientBinary)) {
-            Fail '发布归档中未找到 flooc.exe。'
+            Fail 'flooc.exe not found in release archive.'
         }
 
         Copy-Item -LiteralPath $clientBinary -Destination $Script:ManagedClientBin -Force
@@ -156,7 +156,7 @@ function Get-JsonString {
 
     $property = $JsonObject.PSObject.Properties[$Key]
     if ($null -eq $property) {
-        Fail "预设缺少字段：$Key"
+        Fail "Missing preset field: $Key"
     }
 
     if ($null -eq $property.Value) {
@@ -346,12 +346,12 @@ function Assert-ClientInstance {
     param([string]$Id)
 
     if (-not (Test-InstanceExists $Id)) {
-        Fail "未知实例 ID：$Id"
+        Fail "Unknown instance ID: $Id"
     }
 
     $kind = Get-ConfigKindValue (Get-ConfigPath $Id)
     if ($kind -ne 'client') {
-        Fail "Windows 轻量版当前只支持客户端实例：$Id"
+        Fail "Windows lightweight manager only supports client instances: $Id"
     }
 }
 
@@ -452,10 +452,10 @@ function Get-InstanceStateText {
     param([object]$State)
 
     if ($null -ne (Get-InstanceProcess -Id ([string]$State.id) -State $State)) {
-        return '运行中'
+        return 'running'
     }
 
-    return '已停止'
+    return 'stopped'
 }
 
 function Get-ActionTargetIds {
@@ -474,10 +474,10 @@ function Get-ActionTargetIds {
 
 function Show-BinaryStatus {
     if (Test-Path -LiteralPath $Script:ManagedClientBin) {
-        Write-Host "  flooc：已安装 ($Script:ManagedClientBin)"
+        Write-Host "  flooc: installed ($Script:ManagedClientBin)"
     }
     else {
-        Write-Host '  flooc：尚未安装'
+        Write-Host '  flooc: not installed'
     }
 }
 
@@ -490,25 +490,25 @@ function Write-InstanceSummary {
     )
 
     if (-not [string]::IsNullOrWhiteSpace($Pid)) {
-        Write-Host "  [$Id] 客户端 状态=$StateText 进程=$Pid 自启动=$Autostart"
+        Write-Host "  [$Id] client state=$StateText pid=$Pid autostart=$Autostart"
         return
     }
 
-    Write-Host "  [$Id] 客户端 状态=$StateText 自启动=$Autostart"
+    Write-Host "  [$Id] client state=$StateText autostart=$Autostart"
 }
 
 function Show-Status {
     Ensure-Directories
 
     Write-Host '========================================'
-    Write-Host ' 受管二进制'
+    Write-Host ' Managed binary'
     Show-BinaryStatus
     Write-Host ''
-    Write-Host ' 实例列表'
+    Write-Host ' Instances'
 
     $instanceIds = @(Get-InstanceIds)
     if ($instanceIds.Count -eq 0) {
-        Write-Host '  暂无实例'
+        Write-Host '  no instances'
         Write-Host '========================================'
         return
     }
@@ -533,38 +533,38 @@ function Show-InstanceDetails {
     $modeValue = Get-ConfigModeValue (Get-ConfigPath $Id)
     $autostart = if (Test-AutostartEnabled $Id) { 'enabled' } else { 'disabled' }
 
-    Write-Host "实例 ID：$Id"
-    Write-Host '类型：client'
+    Write-Host "Instance ID: $Id"
+    Write-Host 'Kind: client'
     if ([string]::IsNullOrWhiteSpace($modeValue)) {
-        Write-Host '模式：<未设置>'
+        Write-Host 'Mode: <unset>'
     }
     else {
-        Write-Host "模式：$modeValue"
+        Write-Host "Mode: $modeValue"
     }
-    Write-Host "标签：$(Get-InstanceLabel $Id)"
-    Write-Host "状态：$stateText"
+    Write-Host "Label: $(Get-InstanceLabel $Id)"
+    Write-Host "State: $stateText"
     if ($null -ne $state.pid) {
-        Write-Host "进程 ID：$($state.pid)"
+        Write-Host "PID: $($state.pid)"
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$state.lastStartTime)) {
-        Write-Host "上次启动：$($state.lastStartTime)"
+        Write-Host "Last start: $($state.lastStartTime)"
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$state.lastStopTime)) {
-        Write-Host "上次停止：$($state.lastStopTime)"
+        Write-Host "Last stop: $($state.lastStopTime)"
     }
-    Write-Host "登录自启动：$autostart"
-    Write-Host "配置文件：$(Get-ConfigPath $Id)"
-    Write-Host "状态文件：$(Get-StatePath $Id)"
-    Write-Host "标准输出日志：$(Get-StdoutLogPath $Id)"
-    Write-Host "标准错误日志：$(Get-StderrLogPath $Id)"
-    Write-Host "计划任务：$(Get-AutostartTaskName $Id)"
+    Write-Host "Autostart: $autostart"
+    Write-Host "Config file: $(Get-ConfigPath $Id)"
+    Write-Host "State file: $(Get-StatePath $Id)"
+    Write-Host "Stdout log: $(Get-StdoutLogPath $Id)"
+    Write-Host "Stderr log: $(Get-StderrLogPath $Id)"
+    Write-Host "Scheduled task: $(Get-AutostartTaskName $Id)"
 }
 
 function List-Instances {
     Ensure-Directories
     $instanceIds = @(Get-InstanceIds)
     if ($instanceIds.Count -eq 0) {
-        Write-Note '未找到任何受管实例。'
+        Write-Note 'No managed instances found.'
         return
     }
 
@@ -588,7 +588,7 @@ function Start-Instance {
     $state = Load-InstanceState $Id
 
     if ($null -ne (Get-InstanceProcess -Id $Id -State $state)) {
-        Write-Note "实例已在运行：$Id"
+        Write-Note "Instance already running: $Id"
         return
     }
 
@@ -617,7 +617,7 @@ function Start-Instance {
     Set-StateField $state 'autostartEnabled' (Test-AutostartEnabled $Id)
     Save-InstanceState $Id $state
 
-    Write-Success "已启动实例：$Id"
+    Write-Success "Started instance: $Id"
 }
 
 function Stop-Instance {
@@ -631,7 +631,7 @@ function Stop-Instance {
         Set-StateField $state 'pid' $null
         Set-StateField $state 'lastStopTime' ([DateTime]::UtcNow.ToString('o'))
         Save-InstanceState $Id $state
-        Write-Note "实例已经停止：$Id"
+        Write-Note "Instance already stopped: $Id"
         return
     }
 
@@ -642,7 +642,7 @@ function Stop-Instance {
     Set-StateField $state 'lastStopTime' ([DateTime]::UtcNow.ToString('o'))
     Save-InstanceState $Id $state
 
-    Write-Success "已停止实例：$Id"
+    Write-Success "Stopped instance: $Id"
 }
 
 function Restart-Instance {
@@ -663,7 +663,7 @@ function Enable-AutostartInstance {
 
     Assert-ClientInstance $Id
     if (-not (Test-ScheduledTasksAvailable)) {
-        Fail '当前系统不可用 ScheduledTasks 模块，无法启用登录自启动。'
+        Fail 'ScheduledTasks module is unavailable on this system.'
     }
 
     $managedScript = Ensure-ManagedScript
@@ -683,7 +683,7 @@ function Enable-AutostartInstance {
     Set-StateField $state 'autostartTaskName' $taskName
     Save-InstanceState $Id $state
 
-    Write-Success "已启用登录自启动：$Id"
+    Write-Success "Enabled autostart: $Id"
 }
 
 function Disable-AutostartInstance {
@@ -698,7 +698,7 @@ function Disable-AutostartInstance {
     Set-StateField $state 'autostartEnabled' $false
     Save-InstanceState $Id $state
 
-    Write-Success "已禁用登录自启动：$Id"
+    Write-Success "Disabled autostart: $Id"
 }
 
 function Remove-InstanceFiles {
@@ -727,7 +727,7 @@ function Delete-Instance {
     catch {
     }
     Remove-InstanceFiles $Id
-    Write-Success "已删除实例：$Id"
+    Write-Success "Deleted instance: $Id"
 }
 
 function Show-Logs {
@@ -738,7 +738,7 @@ function Show-Logs {
     if ([string]::IsNullOrWhiteSpace($Id)) {
         $files = @(Get-ChildItem -LiteralPath $Script:LogDir -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -ExpandProperty FullName)
         if ($files.Count -eq 0) {
-            Fail '未找到 Floo 日志文件。'
+            Fail 'No Floo log files found.'
         }
 
         Get-Content -Path $files -Tail 50 -Wait
@@ -773,12 +773,12 @@ function Import-Client {
             $clientTarget = Parse-FlagValue -Argument $argument -Prefix '--client-target'
         }
         else {
-            Fail "不支持的参数：$argument"
+            Fail "Unsupported argument: $argument"
         }
     }
 
     if ([string]::IsNullOrWhiteSpace($preset) -or [string]::IsNullOrWhiteSpace($clientTarget)) {
-        Fail '用法：import-client --preset=... --client-target=IP:PORT'
+        Fail 'Usage: import-client --preset=... --client-target=IP:PORT'
     }
 
     $presetJsonText = ConvertFrom-Base64Url $preset
@@ -786,7 +786,7 @@ function Import-Client {
         $presetObject = $presetJsonText | ConvertFrom-Json
     }
     catch {
-        Fail '无法解析 --preset 内容。'
+        Fail 'Could not parse --preset payload.'
     }
 
     $serverAddr = Get-JsonString -JsonObject $presetObject -Key 'server'
@@ -799,19 +799,19 @@ function Import-Client {
     $clientId = Get-JsonString -JsonObject $presetObject -Key 'client_id'
 
     if ([string]::IsNullOrWhiteSpace($serverAddr) -or [string]::IsNullOrWhiteSpace($mapName) -or [string]::IsNullOrWhiteSpace($clientId)) {
-        Fail '预设缺少必要字段。'
+        Fail 'Preset is missing required fields.'
     }
     if ($modeValue -ne '1' -and $modeValue -ne '2') {
-        Fail '预设中的 mode 只能是 1 或 2。'
+        Fail 'Preset mode must be 1 or 2.'
     }
     if ($proxyMode -ne '1' -and $proxyMode -ne '2') {
-        Fail '预设中的 proxy_mode 只能是 1 或 2。'
+        Fail 'Preset proxy_mode must be 1 or 2.'
     }
     if (-not (Test-ValidId $clientId)) {
-        Fail '预设中的 client_id 不合法。'
+        Fail 'Preset client_id is invalid.'
     }
     if (Test-InstanceExists $clientId) {
-        Fail "实例 ID 已存在：$clientId"
+        Fail "Instance ID already exists: $clientId"
     }
 
     Ensure-Directories
@@ -847,7 +847,7 @@ function Import-Client {
     Save-InstanceState $clientId $state
 
     Start-Instance $clientId
-    Write-Success "客户端实例已导入并启动：$clientId"
+    Write-Success "Imported client instance: $clientId"
 }
 
 function Invoke-NamedInstanceCommand {
@@ -857,12 +857,12 @@ function Invoke-NamedInstanceCommand {
     )
 
     if ([string]::IsNullOrWhiteSpace($TargetId)) {
-        Fail "$Action 需要提供实例 ID 或 --all。"
+        Fail "$Action requires an instance ID or --all."
     }
 
     $targetIds = @(Get-ActionTargetIds $TargetId)
     if ($TargetId -eq '--all' -and $targetIds.Count -eq 0) {
-        Write-Note '未找到任何受管实例。'
+        Write-Note 'No managed instances found.'
         return
     }
 
@@ -883,12 +883,12 @@ function Invoke-AutostartCommand {
     )
 
     if ([string]::IsNullOrWhiteSpace($TargetId)) {
-        Fail "$Action-autostart 需要提供实例 ID 或 --all。"
+        Fail "$Action-autostart requires an instance ID or --all."
     }
 
     $targetIds = @(Get-ActionTargetIds $TargetId)
     if ($TargetId -eq '--all' -and $targetIds.Count -eq 0) {
-        Write-Note '未找到任何受管实例。'
+        Write-Note 'No managed instances found.'
         return
     }
 
@@ -904,27 +904,27 @@ function Invoke-AutostartCommand {
 
 function Show-Help {
     @'
-用法：
+Usage:
   powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 import-client --preset=... --client-target=IP:PORT
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 start <id|--all>
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 stop <id|--all>
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 restart <id|--all>
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 start [id or --all]
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 stop [id or --all]
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 restart [id or --all]
   powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 status [id]
   powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 list
   powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 logs [id]
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 enable-autostart <id|--all>
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 disable-autostart <id|--all>
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 delete <id|--all>
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 enable-autostart [id or --all]
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 disable-autostart [id or --all]
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 delete [id or --all]
   powershell -NoProfile -ExecutionPolicy Bypass -File .\floo-windows.ps1 help
 
-说明：
-  - 受管配置目录：%LOCALAPPDATA%\Floo\configs
-  - 受管二进制目录：%LOCALAPPDATA%\Floo\bin
-  - 日志目录：%LOCALAPPDATA%\Floo\logs
-  - 状态目录：%LOCALAPPDATA%\Floo\state
-  - Windows 轻量版当前仅管理 flooc 客户端实例。
-  - Linux/macOS 生成的 --preset 可直接用于 import-client。
-  - enable-autostart 会创建当前用户登录触发的计划任务。
+Notes:
+  - Managed config dir: %LOCALAPPDATA%\Floo\configs
+  - Managed binary dir: %LOCALAPPDATA%\Floo\bin
+  - Log dir: %LOCALAPPDATA%\Floo\logs
+  - State dir: %LOCALAPPDATA%\Floo\state
+  - This Windows lightweight manager only manages flooc client instances.
+  - Presets generated on Linux/macOS can be imported directly.
+  - enable-autostart creates a per-user logon scheduled task.
 '@ | Write-Host
 }
 
@@ -991,7 +991,7 @@ try {
             Show-Help
         }
         default {
-            Fail "不支持的命令：$command"
+            Fail "Unsupported command: $command"
         }
     }
 }
