@@ -485,12 +485,12 @@ function Write-InstanceSummary {
     param(
         [string]$Id,
         [string]$StateText,
-        [string]$Pid,
+        [string]$InstancePid,
         [string]$Autostart
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Pid)) {
-        Write-Host "  [$Id] client state=$StateText pid=$Pid autostart=$Autostart"
+    if (-not [string]::IsNullOrWhiteSpace($InstancePid)) {
+        Write-Host "  [$Id] client state=$StateText pid=$InstancePid autostart=$Autostart"
         return
     }
 
@@ -518,7 +518,7 @@ function Show-Status {
         $stateText = Get-InstanceStateText -State $state
         $instancePid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
         $autostart = if (Test-AutostartEnabled $id) { 'on' } else { 'off' }
-        Write-InstanceSummary -Id $id -StateText $stateText -Pid $instancePid -Autostart $autostart
+        Write-InstanceSummary -Id $id -StateText $stateText -InstancePid $instancePid -Autostart $autostart
     }
 
     Write-Host '========================================'
@@ -573,7 +573,7 @@ function List-Instances {
         $stateText = Get-InstanceStateText -State $state
         $instancePid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
         $autostart = if (Test-AutostartEnabled $id) { 'on' } else { 'off' }
-        Write-InstanceSummary -Id $id -StateText $stateText -Pid $instancePid -Autostart $autostart
+        Write-InstanceSummary -Id $id -StateText $stateText -InstancePid $instancePid -Autostart $autostart
     }
 }
 
