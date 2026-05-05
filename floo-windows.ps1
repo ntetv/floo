@@ -516,9 +516,9 @@ function Show-Status {
     foreach ($id in $instanceIds) {
         $state = Load-InstanceState $id
         $stateText = Get-InstanceStateText -State $state
-        $pid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
+        $instancePid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
         $autostart = if (Test-AutostartEnabled $id) { 'on' } else { 'off' }
-        Write-InstanceSummary -Id $id -StateText $stateText -Pid $pid -Autostart $autostart
+        Write-InstanceSummary -Id $id -StateText $stateText -Pid $instancePid -Autostart $autostart
     }
 
     Write-Host '========================================'
@@ -571,9 +571,9 @@ function List-Instances {
     foreach ($id in $instanceIds) {
         $state = Load-InstanceState $id
         $stateText = Get-InstanceStateText -State $state
-        $pid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
+        $instancePid = if ($null -ne $state.pid) { [string]$state.pid } else { '' }
         $autostart = if (Test-AutostartEnabled $id) { 'on' } else { 'off' }
-        Write-InstanceSummary -Id $id -StateText $stateText -Pid $pid -Autostart $autostart
+        Write-InstanceSummary -Id $id -StateText $stateText -Pid $instancePid -Autostart $autostart
     }
 }
 
