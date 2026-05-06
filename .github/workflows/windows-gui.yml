@@ -2,7 +2,7 @@ name: Build Windows GUI Shell
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**']
     paths:
       - 'website/**'
       - '.github/workflows/windows-gui.yml'
