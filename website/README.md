@@ -1,105 +1,113 @@
-# Floo Website
+# Floo Windows GUI Shell Prototype
 
-Modern, cyberpunk-themed project website for Floo, built with React and Vite.
+`website/` 现在既是 Floo 的前端原型目录，也是 Windows 管理器 GUI 壳的开发区。
 
-## Features
+当前目标是尽快提供一个可双击、可评审交互的 `floo-windows.exe` 测试壳，方便在 Windows 上确认以下界面是否合理：
 
-- 🎨 Dark/cyberpunk themed design with neon accents
-- ⚡ Animated hero section with performance metrics
-- 📊 Interactive performance benchmarks
-- 🔗 Live GitHub integration (stars, releases)
-- 📱 Fully responsive design
-- 🚀 Fast and optimized with Vite
+- 中文状态面板
+- 实例列表与实例详情
+- 导入客户端弹窗
+- 添加实例弹窗（客户端 / 服务端切换）
+- 日志查看弹窗
+- 实例操作按钮布局
 
-## Development
+## 当前状态
 
-### Prerequisites
+- React + Vite 页面已收敛为单窗口桌面管理器布局
+- Electron 负责桌面壳封装
+- 目前仍是 mock 数据 / mock 操作，不会真正调用 `flooc.exe` / `floos.exe`
+- 后续会再接入 `import-client`、`status`、`list`、`start/stop/restart`、`logs`、`enable/disable autostart`
 
-- Node.js 18+ and npm
+## 开发要求
 
-### Install Dependencies
+- Node.js 20+
+- npm
+
+## 安装依赖
 
 ```bash
 npm install
 ```
 
-### Run Development Server
+## Web 原型调试
 
 ```bash
 npm run dev
 ```
 
-The website will be available at `http://localhost:5173`
+默认地址：`http://127.0.0.1:5173`
 
-### Build for Production
+## 桌面壳调试
+
+```bash
+npm run dev:desktop
+```
+
+这个命令会：
+
+1. 启动 Vite 开发服务器
+2. 等待本地端口就绪
+3. 打开 Electron 桌面窗口
+
+## 构建 Web 静态资源
 
 ```bash
 npm run build
 ```
 
-The built files will be in the `dist/` directory.
+输出目录：`dist/`
 
-### Preview Production Build
+## 构建桌面壳目录产物
 
 ```bash
-npm run preview
+npm run build:desktop
 ```
 
-## Deployment
+这个命令会先构建前端，再生成当前平台的 Electron unpacked 目录产物，用来验证桌面壳打包配置。
 
-The website is automatically deployed to GitHub Pages when changes are pushed to the `main` branch (in the `website/` directory).
+## 构建 Windows 单文件 GUI 壳
 
-The deployment is handled by `.github/workflows/deploy-website.yml`.
-
-### Manual Deployment
-
-If you need to deploy manually:
-
-1. Build the site: `npm run build`
-2. The built files in `dist/` can be deployed to any static hosting service
-
-## Project Structure
-
+```bash
+npm run build:desktop:win
 ```
+
+预期产物：`release/windows-gui/floo-windows.exe`
+
+说明：
+
+- 该命令主要面向 Windows 环境或 Windows CI runner
+- 当前 GitHub workflow 会在 Windows runner 上构建该产物，再并入主 release zip
+- 也可以直接运行专用 workflow `.github/workflows/windows-gui.yml`，单独生成可下载的 `floo-windows.exe` 测试产物
+
+## GitHub Pages
+
+`website/` 仍可通过 `.github/workflows/deploy-website.yml` 构建并发布静态原型页面。
+
+由于 Vite 已改为相对资源路径，页面既可作为桌面壳 renderer，也可继续用于静态托管预览。
+
+## 目录说明
+
+```text
 website/
+├── electron/
+│   └── main.cjs          # Electron 主进程入口
 ├── src/
-│   ├── components/        # React components
-│   │   ├── Hero.jsx       # Hero section with animated metrics
-│   │   ├── Features.jsx   # Features grid
-│   │   ├── Performance.jsx # Performance benchmarks
-│   │   ├── Installation.jsx # Installation guide
-│   │   ├── GitHub.jsx     # GitHub stats integration
-│   │   └── Footer.jsx     # Footer
-│   ├── App.jsx            # Main app component
-│   ├── App.css            # Global app styles
-│   ├── index.css          # Global CSS variables and theme
-│   └── main.jsx           # Entry point
-├── index.html             # HTML template
-├── vite.config.js         # Vite configuration
-└── package.json           # Dependencies and scripts
+│   ├── App.jsx           # Windows GUI 壳主界面
+│   ├── App.css           # GUI 壳样式
+│   ├── index.css         # 全局基础样式
+│   └── main.jsx          # React 入口
+├── index.html            # HTML 模板
+├── vite.config.js        # Vite 配置（桌面壳 + 静态托管共用）
+└── package.json          # 前端与桌面壳脚本
 ```
 
-## Customization
+## 下一阶段
 
-### Colors
+后续确认 GUI 交互通过后，再补齐真正的后端逻辑：
 
-Edit the CSS variables in `src/index.css`:
-
-```css
-:root {
-  --accent-cyan: #00f3ff;
-  --accent-pink: #ff006e;
-  --accent-purple: #8b5cf6;
-  /* ... */
-}
-```
-
-### Content
-
-- **Performance metrics**: Edit in `src/components/Performance.jsx`
-- **Features**: Edit the `features` array in `src/components/Features.jsx`
-- **Platform downloads**: Edit the `platforms` array in `src/components/Installation.jsx`
-
-## License
-
-MIT License - Same as the main Floo project
+- 读取 Windows 受管目录
+- 获取实例状态与日志
+- 导入客户端
+- 添加服务端 / 客户端实例
+- 启停与重启实例
+- 自启动开关

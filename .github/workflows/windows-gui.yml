@@ -1,0 +1,41 @@
+name: Build Windows GUI Shell
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/windows-gui.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows-gui:
+    name: Build floo-windows.exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install website dependencies
+        working-directory: ./website
+        run: npm ci
+
+      - name: Build floo-windows.exe prototype
+        working-directory: ./website
+        run: npm run build:desktop:win
+
+      - name: Upload floo-windows.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floo-windows-exe
+          path: website/release/windows-gui/floo-windows.exe
+          if-no-files-found: error
+          retention-days: 14
