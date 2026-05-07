@@ -81,7 +81,7 @@ proxy_url = "socks5://corporate-proxy:1080"
 - [Latest release](https://github.com/NTETV/floo/releases/latest)
 - [Nightly builds](https://github.com/NTETV/floo/releases/tag/nightly)
 
-Windows release bundles currently ship `flooc.exe`, `floos.exe`, and example configs. The native GUI manager (`floo-windows.exe`) is under development in `website/`.
+Windows release bundles ship `flooc.exe`, `floos.exe`, example configs, and a downloadable GUI shell prototype (`floo-windows.exe`). The native backend wiring is still under development in `website/`.
 
 macOS release bundles also include `floo-macos.sh`, a terminal manager for user-level `launchd` instances:
 ```bash
@@ -334,6 +334,8 @@ heartbeat_interval_seconds = 30   # Keepalive frequency
 > ℹ️ **pin_threads**: keeps each tunnel on a dedicated core (Linux/Unix). Disable only if your scheduler forbids manual affinity.
 >
 > ℹ️ **io_batch_bytes**: per-stream read/write buffer size. Increase for jumbo frames or high-latency satellite links; decrease for memory-constrained devices.
+>
+> ℹ️ **Mux hardening**: the built-in multiplexer now includes per-stream send credit (`window_update`), control-message prioritization, and half-close-aware shutdown so large transfers are less likely to starve interactive streams or leak long-lived half-open state.
 
 ---
 
@@ -382,18 +384,18 @@ Every release publishes optimized binaries for:
 | **Linux ARM64 (static)** | `floo-aarch64-linux-musl.tar.gz` | ARM containers and generic ARM64 hosts |
 | **macOS Apple Silicon** | `floo-aarch64-macos.tar.gz` | M1/M2/M3/M4 Macs |
 | **macOS Intel** | `floo-x86_64-macos.tar.gz` | Intel Macs |
-| **Windows x86_64** | `floo-x86_64-windows.zip` | Core Windows binaries; GUI manager in development |
+| **Windows x86_64** | `floo-x86_64-windows.zip` | Core Windows binaries + GUI shell prototype |
 
 Download from [releases page](https://github.com/NTETV/floo/releases).
 
 macOS archives also ship `floo-macos.sh` for terminal-based instance management on user-level `launchd`.
-Windows archives currently ship `flooc.exe`, `floos.exe`, and example configs. The planned native GUI manager (`floo-windows.exe`) is being prototyped under `website/`.
+Windows archives ship `flooc.exe`, `floos.exe`, example configs, and a GUI shell prototype (`floo-windows.exe`). The prototype lets Windows users double-click straight into the Chinese status panel while the native backend wiring remains under active development under `website/`.
 
 ---
 
 ## 🪟 Windows GUI manager (Prototype)
 
-The future Windows manager is being redesigned as a single-file native GUI application (`floo-windows.exe`). The current repository prototype lives under `website/` and focuses on the shell experience before the backend is wired up.
+The Windows manager is now being delivered as a single-file GUI shell prototype (`floo-windows.exe`). The current implementation lives under `website/` and focuses on interaction review first: users can double-click into a Chinese status panel, inspect mock instance state, and walk through import/add/log dialogs before the real backend is wired up.
 
 ### Planned interactions
 
@@ -405,9 +407,10 @@ The future Windows manager is being redesigned as a single-file native GUI appli
 
 ### Current status
 
-- Windows release bundles currently provide the core binaries (`flooc.exe`, `floos.exe`) and sample configs
-- GUI shell prototype is checked into `website/`
-- Native executable packaging and backend wiring are pending
+- Windows release bundles now include the core binaries (`flooc.exe`, `floos.exe`), sample configs, and the GUI shell prototype (`floo-windows.exe`)
+- GUI shell prototype is implemented in `website/` with Chinese status panel, import dialog, add-instance dialog, and log dialog
+- GitHub Actions also provides a dedicated `Build Windows GUI Shell` workflow for standalone `floo-windows.exe` test builds
+- Native process execution (`import-client`, `status`, `list`, `start/stop/restart`, `logs`, autostart) is still pending backend wiring
 
 ---
 

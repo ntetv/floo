@@ -20,6 +20,8 @@ pub const MessageType = enum(u8) {
     version = 0x08,
     /// Server->Client: Request reverse connection to local target
     reverse_connect = 0x09,
+    /// Bidirectional: Grant additional send credit to a stream
+    window_update = 0x0A,
 };
 
 /// Stream ID for multiplexing multiple connections over one tunnel
@@ -273,6 +275,34 @@ pub const CloseMsg = struct {
     }
 };
 
+pub const WindowUpdateMsg = struct {
+    service_id: ServiceId,
+    stream_id: StreamId,
+    credit_bytes: u32,
+
+    pub fn encodeInto(self: WindowUpdateMsg, buffer: []u8) !usize {
+        const total_len = 11;
+        if (buffer.len < total_len) return error.BufferTooSmall;
+
+        buffer[0] = @intFromEnum(MessageType.window_update);
+        std.mem.writeInt(u16, buffer[1..3], self.service_id, .big);
+        std.mem.writeInt(u32, buffer[3..7], self.stream_id, .big);
+        std.mem.writeInt(u32, buffer[7..11], self.credit_bytes, .big);
+        return total_len;
+    }
+
+    pub fn decode(data: []const u8) !WindowUpdateMsg {
+        if (data.len < 11) return error.InvalidMessage;
+        if (data[0] != @intFromEnum(MessageType.window_update)) return error.InvalidMessageType;
+
+        return WindowUpdateMsg{
+            .service_id = std.mem.readInt(u16, data[1..3], .big),
+            .stream_id = std.mem.readInt(u32, data[3..7], .big),
+            .credit_bytes = std.mem.readInt(u32, data[7..11], .big),
+        };
+    }
+};
+
 /// UDP Data message: Transfer UDP packet with source address information
 /// Format: [type:1][service_id:2][stream_id:4][addr_len:1][addr_bytes...][port:2][data...]
 /// This preserves UDP source address so replies can be routed correctly
@@ -502,4 +532,35 @@ test "CloseMsg encode/decode" {
 
     try std.testing.expectEqual(msg.service_id, decoded.service_id);
     try std.testing.expectEqual(msg.stream_id, decoded.stream_id);
+}
+
+test "WindowUpdateMsg encode/decode" {
+    const msg = WindowUpdateMsg{
+        .service_id = 7,
+        .stream_id = 1024,
+        .credit_bytes = 65536,
+    };
+
+    var encoded: [16]u8 = undefined;
+    const encoded_len = try msg.encodeInto(&encoded);
+    const decoded = try WindowUpdateMsg.decode(encoded[0..encoded_len]);
+
+    try std.testing.expectEqual(msg.service_id, decoded.service_id);
+    try std.testing.expectEqual(msg.stream_id, decoded.stream_id);
+    try std.testing.expectEqual(msg.credit_bytes, decoded.credit_bytes);
+}
+
+test "WindowUpdateMsg rejects short frame" {
+    const encoded = [_]u8{ @intFromEnum(MessageType.window_update), 0x00, 0x01 };
+    try std.testing.expectError(error.InvalidMessage, WindowUpdateMsg.decode(encoded[0..]));
+}
+
+test "WindowUpdateMsg rejects wrong type" {
+    var encoded: [11]u8 = undefined;
+    encoded[0] = @intFromEnum(MessageType.close);
+    std.mem.writeInt(u16, encoded[1..3], 1, .big);
+    std.mem.writeInt(u32, encoded[3..7], 2, .big);
+    std.mem.writeInt(u32, encoded[7..11], 3, .big);
+
+    try std.testing.expectError(error.InvalidMessageType, WindowUpdateMsg.decode(encoded[0..]));
 }

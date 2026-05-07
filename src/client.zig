@@ -23,6 +23,11 @@ const formatAddress = common.formatAddress;
 const resolveHostPort = common.resolveHostPort;
 const math = std.math;
 
+const STREAM_WINDOW_BYTES: usize = 256 * 1024;
+const REVERSE_CONNECT_INITIAL_BACKOFF_MS: i64 = 100;
+const REVERSE_CONNECT_MAX_BACKOFF_MS: i64 = 5 * 1000;
+const REVERSE_CONNECT_LOG_INTERVAL_MS: i64 = 5 * 1000;
+
 const CheckStatus = diagnostics.CheckStatus;
 const DisconnectReason = diagnostics.DisconnectReason;
 
@@ -600,8 +605,12 @@ const LocalConnection = struct {
     stream_id: tunnel.StreamId,
     local_fd: posix.fd_t,
     tunnel: *TunnelClient,
-    fd_closed: std.atomic.Value(bool), // Track if local_fd is closed
+    fd_closed: std.atomic.Value(bool), // Track if local_fd is fully closed
+    read_closed: std.atomic.Value(bool),
+    write_closed: std.atomic.Value(bool),
+    close_sent: std.atomic.Value(bool),
     ref_count: std.atomic.Value(usize),
+    send_window: std.atomic.Value(usize),
     send_buffer: []align(64) u8,
 
     fn create(allocator: std.mem.Allocator, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId, local_fd: posix.fd_t, tunnel_client: *TunnelClient) !*LocalConnection {
@@ -619,7 +628,11 @@ const LocalConnection = struct {
             .local_fd = local_fd,
             .tunnel = tunnel_client,
             .fd_closed = std.atomic.Value(bool).init(false),
+            .read_closed = std.atomic.Value(bool).init(false),
+            .write_closed = std.atomic.Value(bool).init(false),
+            .close_sent = std.atomic.Value(bool).init(false),
             .ref_count = std.atomic.Value(usize).init(1),
+            .send_window = std.atomic.Value(usize).init(STREAM_WINDOW_BYTES),
             .send_buffer = send_buffer,
         };
         return conn;
@@ -647,6 +660,48 @@ const LocalConnection = struct {
         if (!self.fd_closed.swap(true, .acq_rel)) {
             common.closeFd(self.local_fd);
         }
+        self.read_closed.store(true, .release);
+        self.write_closed.store(true, .release);
+    }
+
+    fn consumeSendCredit(self: *LocalConnection, desired: usize) usize {
+        while (true) {
+            const available = self.send_window.load(.acquire);
+            if (available == 0) return 0;
+            const granted = @min(available, desired);
+            if (self.send_window.cmpxchgWeak(available, available - granted, .acq_rel, .acquire) == null) {
+                return granted;
+            }
+        }
+    }
+
+    fn replenishSendCredit(self: *LocalConnection, credit: usize) void {
+        while (true) {
+            const available = self.send_window.load(.acquire);
+            const updated = @min(available + credit, STREAM_WINDOW_BYTES);
+            if (self.send_window.cmpxchgWeak(available, updated, .acq_rel, .acquire) == null) {
+                return;
+            }
+        }
+    }
+
+    fn closeWrite(self: *LocalConnection) void {
+        if (self.fd_closed.load(.acquire)) return;
+        if (!self.write_closed.swap(true, .acq_rel)) {
+            common.shutdownSocket(self.local_fd, .send);
+        }
+    }
+
+    fn markPeerClosed(self: *LocalConnection) void {
+        self.read_closed.store(true, .release);
+    }
+
+    fn shouldFinalize(self: *LocalConnection) bool {
+        return self.read_closed.load(.acquire) and self.write_closed.load(.acquire);
+    }
+
+    fn markCloseSent(self: *LocalConnection) bool {
+        return !self.close_sent.swap(true, .acq_rel);
     }
 };
 
@@ -664,6 +719,13 @@ fn effectiveTunnelCount(settings: *config.AdvancedSettings) usize {
     settings.num_tunnels = clamped;
     return clamped;
 }
+
+const ReverseTargetState = struct {
+    failure_count: usize = 0,
+    cooldown_until_ms: i64 = 0,
+    last_log_ms: i64 = 0,
+    suppressed_logs: usize = 0,
+};
 
 /// Tunnel client
 const TunnelClient = struct {
@@ -690,6 +752,7 @@ const TunnelClient = struct {
 
     // Config reference for TCP tuning (needed for reverse mode)
     cfg: *const config.ClientConfig,
+    reverse_failures: std.AutoHashMap(tunnel.ServiceId, ReverseTargetState),
 
     fn create(
         allocator: std.mem.Allocator,
@@ -747,6 +810,7 @@ const TunnelClient = struct {
             .disconnect_reason = .none,
             .default_token = cfg.token,
             .cfg = cfg,
+            .reverse_failures = std.AutoHashMap(tunnel.ServiceId, ReverseTargetState).init(allocator),
         };
         channel_guard = false;
 
@@ -775,6 +839,55 @@ const TunnelClient = struct {
 
     fn markDisconnectReason(self: *TunnelClient, reason: DisconnectReason) void {
         diagnostics.recordDisconnectReason(&self.disconnect_reason, reason);
+    }
+
+    fn recordReverseFailure(self: *TunnelClient, service_id: tunnel.ServiceId, address: []const u8, port: u16, err: anyerror) void {
+        const now = common.milliTimestamp();
+        const entry = self.reverse_failures.getOrPut(service_id) catch return;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{};
+        }
+
+        entry.value_ptr.failure_count += 1;
+        const shift: u6 = @intCast(@min(entry.value_ptr.failure_count - 1, @as(usize, 6)));
+        const multiplier = @as(i64, 1) << shift;
+        const cooldown = @min(REVERSE_CONNECT_INITIAL_BACKOFF_MS * multiplier, REVERSE_CONNECT_MAX_BACKOFF_MS);
+        entry.value_ptr.cooldown_until_ms = now + cooldown;
+
+        if (now - entry.value_ptr.last_log_ms >= REVERSE_CONNECT_LOG_INTERVAL_MS) {
+            if (entry.value_ptr.suppressed_logs > 0) {
+                std.debug.print("[CLIENT] Reverse target {s}:{} still unavailable ({}) after suppressing {} similar errors\n", .{ address, port, err, entry.value_ptr.suppressed_logs });
+            } else {
+                std.debug.print("[CLIENT] Reverse target {s}:{} unavailable: {} (cooldown {}ms)\n", .{ address, port, err, cooldown });
+            }
+            entry.value_ptr.last_log_ms = now;
+            entry.value_ptr.suppressed_logs = 0;
+        } else {
+            entry.value_ptr.suppressed_logs += 1;
+        }
+    }
+
+    fn clearReverseFailure(self: *TunnelClient, service_id: tunnel.ServiceId) void {
+        if (self.reverse_failures.getPtr(service_id)) |state| {
+            state.* = .{};
+        }
+    }
+
+    fn reverseTargetCoolingDown(self: *TunnelClient, service_id: tunnel.ServiceId) bool {
+        const state = self.reverse_failures.get(service_id) orelse return false;
+        return state.cooldown_until_ms > common.milliTimestamp();
+    }
+
+    fn rejectReverseConnect(self: *TunnelClient, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId, code: tunnel.ErrorCode, message: []const u8) void {
+        const error_msg = tunnel.ConnectErrorMsg{
+            .service_id = service_id,
+            .stream_id = stream_id,
+            .error_code = code,
+            .error_msg = message,
+        };
+        var encode_buf: [128]u8 = undefined;
+        const encoded_len = error_msg.encodeInto(&encode_buf) catch return;
+        self.channel.sendCopy(encode_buf[0..encoded_len]) catch {};
     }
 
     fn run(self: *TunnelClient) void {
@@ -829,6 +942,7 @@ const TunnelClient = struct {
             }) catch unreachable;
             poll_entries.append(global_allocator, .{ .tunnel = {} }) catch unreachable;
 
+            const control_priority = poll_entries.items.len;
             self.connections_mutex.lock(std.Options.debug_io) catch unreachable;
             var iter = self.connections.iterator();
             while (iter.next()) |entry| {
@@ -849,6 +963,11 @@ const TunnelClient = struct {
                 };
             }
             self.connections_mutex.unlock(std.Options.debug_io);
+
+            if (control_priority < poll_entries.items.len) {
+                std.mem.rotate(PollEntry, poll_entries.items[control_priority..], 1);
+                std.mem.rotate(common.PollFd, poll_fds.items[control_priority..], 1);
+            }
 
             const ready = common.pollCompat(poll_fds.items, poll_timeout_ms) catch |err| {
                 std.debug.print("[CLIENT] Poll error: {}\n", .{err});
@@ -988,6 +1107,19 @@ const TunnelClient = struct {
                     entry.value.releaseRef();
                 }
             },
+            .window_update => {
+                const update_msg = try tunnel.WindowUpdateMsg.decode(message_slice);
+
+                self.connections_mutex.lock(std.Options.debug_io) catch unreachable;
+                const conn_opt = self.connections.get(update_msg.stream_id);
+                if (conn_opt) |conn| conn.acquireRef();
+                self.connections_mutex.unlock(std.Options.debug_io);
+
+                if (conn_opt) |conn| {
+                    defer conn.releaseRef();
+                    conn.replenishSendCredit(update_msg.credit_bytes);
+                }
+            },
             .data => {
                 const data_msg = try tunnel.DataMsg.decode(message_slice);
 
@@ -1006,6 +1138,8 @@ const TunnelClient = struct {
                             std.debug.print("[STREAM {}] Send to local failed: {}\n", .{ data_msg.stream_id, err });
                             self.completeLocalConnection(active_conn, true);
                         };
+
+                        self.sendWindowUpdate(active_conn.service_id, active_conn.stream_id, data_msg.data.len);
                     }
                 }
             },
@@ -1018,7 +1152,10 @@ const TunnelClient = struct {
                 self.connections_mutex.unlock(std.Options.debug_io);
 
                 if (maybe_conn) |entry| {
-                    entry.value.stop();
+                    entry.value.markPeerClosed();
+                    if (entry.value.shouldFinalize()) {
+                        entry.value.stop();
+                    }
                     entry.value.releaseRef();
                     tracePrint(enable_tunnel_trace, "[CLIENT] Connection {} cleaned up after CLOSE message\n", .{close_msg.stream_id});
                 } else {
@@ -1068,27 +1205,25 @@ const TunnelClient = struct {
 
                 const service = found_service orelse {
                     std.debug.print("[CLIENT] Unknown reverse service_id={}\n", .{msg.service_id});
-                    // Send error back
-                    const error_msg = tunnel.ConnectErrorMsg{
-                        .service_id = msg.service_id,
-                        .stream_id = msg.stream_id,
-                        .error_code = .unknown_service,
-                        .error_msg = "Unknown reverse service",
-                    };
-                    var encode_buf: [128]u8 = undefined;
-                    const encoded_len = error_msg.encodeInto(&encode_buf) catch return;
-                    self.channel.sendCopy(encode_buf[0..encoded_len]) catch {};
+                    self.rejectReverseConnect(msg.service_id, msg.stream_id, .unknown_service, "Unknown reverse service");
                     return;
                 };
 
+                if (self.reverseTargetCoolingDown(msg.service_id)) {
+                    self.rejectReverseConnect(msg.service_id, msg.stream_id, .service_unavailable, "Reverse target cooling down");
+                    return;
+                }
+
                 // Connect to local service
                 const address = resolveHostPort(service.address, service.port) catch |err| {
-                    std.debug.print("[CLIENT] Failed to resolve reverse target {s}:{}: {}\n", .{ service.address, service.port, err });
+                    self.recordReverseFailure(msg.service_id, service.address, service.port, err);
+                    self.rejectReverseConnect(msg.service_id, msg.stream_id, .service_unavailable, "Failed to resolve local target");
                     return;
                 };
 
                 const local_fd = common.createSocket(address.any.family, posix.SOCK.STREAM | common.SOCK_CLOEXEC, 0) catch |err| {
-                    std.debug.print("[CLIENT] Failed to create socket for reverse: {}\n", .{err});
+                    self.recordReverseFailure(msg.service_id, service.address, service.port, err);
+                    self.rejectReverseConnect(msg.service_id, msg.stream_id, .service_unavailable, "Failed to create local socket");
                     return;
                 };
                 errdefer common.closeFd(local_fd);
@@ -1096,25 +1231,18 @@ const TunnelClient = struct {
                 setSockOpts(local_fd, self.cfg);
 
                 common.connectSocket(local_fd, &address.any, address.getOsSockLen()) catch |err| {
-                    std.debug.print("[CLIENT] Failed to connect to local target {s}:{}: {}\n", .{ service.address, service.port, err });
                     common.closeFd(local_fd);
-                    // Send error back
                     const error_code: tunnel.ErrorCode = switch (err) {
                         error.ConnectionRefused => .connection_refused,
                         error.NetworkUnreachable => .connection_timeout,
                         else => .service_unavailable,
                     };
-                    const error_msg = tunnel.ConnectErrorMsg{
-                        .service_id = msg.service_id,
-                        .stream_id = msg.stream_id,
-                        .error_code = error_code,
-                        .error_msg = "Failed to connect to local target",
-                    };
-                    var encode_buf: [128]u8 = undefined;
-                    const encoded_len = error_msg.encodeInto(&encode_buf) catch return;
-                    self.channel.sendCopy(encode_buf[0..encoded_len]) catch {};
+                    self.recordReverseFailure(msg.service_id, service.address, service.port, err);
+                    self.rejectReverseConnect(msg.service_id, msg.stream_id, error_code, "Failed to connect to local target");
                     return;
                 };
+
+                self.clearReverseFailure(msg.service_id);
 
                 tracePrint(enable_tunnel_trace, "[CLIENT-REVERSE] Connected to local {s}:{} for stream {}\n", .{ service.address, service.port, msg.stream_id });
 
@@ -1276,18 +1404,34 @@ const TunnelClient = struct {
         const message_header_len: usize = 7;
         const io_batch = self.cfg.advanced.io_batch_bytes;
 
+        const allowed_payload = conn.consumeSendCredit(io_batch);
+        if (allowed_payload == 0) return;
+
         // Ensure we don't overflow the buffer
-        const max_read = @min(io_batch, conn.send_buffer.len - message_header_len - noise.TAG_LEN);
+        const max_read = @min(allowed_payload, conn.send_buffer.len - message_header_len - noise.TAG_LEN);
 
         const recv_slice = conn.send_buffer[message_header_len..][0..max_read];
         const n = common.recvCompat(conn.local_fd, recv_slice) catch |err| switch (err) {
-            error.WouldBlock => return,
+            error.WouldBlock => {
+                conn.replenishSendCredit(allowed_payload);
+                return;
+            },
             else => return err,
         };
 
         if (n == 0) {
-            self.sendCloseFrame(conn.service_id, conn.stream_id);
-            return error.ConnectionClosed;
+            conn.replenishSendCredit(allowed_payload);
+            conn.markPeerClosed();
+            conn.closeWrite();
+            self.sendCloseFrame(conn.service_id, conn.stream_id, conn);
+            if (conn.shouldFinalize()) {
+                return error.ConnectionClosed;
+            }
+            return;
+        }
+
+        if (n < allowed_payload) {
+            conn.replenishSendCredit(allowed_payload - n);
         }
 
         if (!self.channel.isEncrypted()) {
@@ -1322,7 +1466,13 @@ const TunnelClient = struct {
     fn completeLocalConnection(self: *TunnelClient, conn: *LocalConnection, send_close: bool) void {
         const already_closed = conn.fd_closed.load(.acquire);
         if (send_close and !already_closed) {
-            self.sendCloseFrame(conn.service_id, conn.stream_id);
+            conn.markPeerClosed();
+            conn.closeWrite();
+            self.sendCloseFrame(conn.service_id, conn.stream_id, conn);
+        }
+
+        if (!conn.shouldFinalize()) {
+            return;
         }
 
         self.connections_mutex.lock(std.Options.debug_io) catch unreachable;
@@ -1335,10 +1485,25 @@ const TunnelClient = struct {
         conn.stop();
     }
 
-    fn sendCloseFrame(self: *TunnelClient, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId) void {
+    fn sendCloseFrame(self: *TunnelClient, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId, conn: *LocalConnection) void {
+        if (!conn.markCloseSent()) return;
         var encode_buf: [16]u8 = undefined;
         const close_msg = tunnel.CloseMsg{ .service_id = service_id, .stream_id = stream_id };
         const encoded_len = close_msg.encodeInto(&encode_buf) catch return;
+        self.channel.sendCopy(encode_buf[0..encoded_len]) catch {};
+    }
+
+    fn sendWindowUpdate(self: *TunnelClient, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId, credit: usize) void {
+        if (credit == 0) return;
+        if (credit > std.math.maxInt(u32)) return;
+
+        var encode_buf: [16]u8 = undefined;
+        const update_msg = tunnel.WindowUpdateMsg{
+            .service_id = service_id,
+            .stream_id = stream_id,
+            .credit_bytes = @intCast(credit),
+        };
+        const encoded_len = update_msg.encodeInto(&encode_buf) catch return;
         self.channel.sendCopy(encode_buf[0..encoded_len]) catch {};
     }
 
@@ -1375,6 +1540,7 @@ const TunnelClient = struct {
             }
         }
         self.connections.deinit();
+        self.reverse_failures.deinit();
 
         common.closeFd(self.tunnel_fd);
         self.tunnel_fd = common.INVALID_FD;
@@ -1391,6 +1557,7 @@ const TunnelClient = struct {
             self.tunnel_fd = common.INVALID_FD;
         }
         self.channel.deinit();
+        self.reverse_failures.deinit();
         global_allocator.destroy(self);
     }
 };
@@ -1738,6 +1905,22 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
     std.debug.print("[{s} {}] Thread exiting\n", .{ if (params.role.load(.acquire) == .spare) "SPARE" else "TUNNEL", params.tunnel_index });
 }
 
+fn makeSocketPair() ![2]posix.fd_t {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return error.SystemResources;
+    return fds;
+}
+
+fn writeAllCompat(fd: posix.fd_t, data: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const written = std.c.write(fd, data.ptr + offset, data.len - offset);
+        if (written <= 0) return error.Unexpected;
+        offset += @intCast(written);
+    }
+}
+
 test "forwardLocalData sends plaintext frames" {
     if (builtin.target.os.tag == .windows) return;
 
@@ -1749,11 +1932,11 @@ test "forwardLocalData sends plaintext frames" {
     var cfg = try config.ClientConfig.init(allocator);
     defer cfg.deinit();
 
-    const tunnel_pair = try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    const tunnel_pair = try makeSocketPair();
     defer common.closeFd(tunnel_pair[0]);
     defer common.closeFd(tunnel_pair[1]);
 
-    const local_pair = try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    const local_pair = try makeSocketPair();
     defer common.closeFd(local_pair[0]);
     defer common.closeFd(local_pair[1]);
 
@@ -1769,18 +1952,21 @@ test "forwardLocalData sends plaintext frames" {
 
     var client = TunnelClient{
         .tunnel_fd = tunnel_pair[0],
+        .tunnel_index = 0,
         .service_id = 1,
         .connections = std.AutoHashMap(tunnel.StreamId, *LocalConnection).init(allocator),
-        .connections_mutex = .{},
+        .connections_mutex = std.Io.Mutex.init,
         .channel = channel,
         .next_stream_id = std.atomic.Value(u32).init(2),
         .running = std.atomic.Value(bool).init(true),
         .udp_forwarder = null,
         .transport = .tcp,
         .heartbeat_timeout_ms = 0,
-        .last_heartbeat_time = std.atomic.Value(i64).init(std.time.milliTimestamp()),
+        .last_heartbeat_time = std.atomic.Value(i64).init(common.milliTimestamp()),
+        .disconnect_reason = .none,
         .default_token = "",
         .cfg = &cfg,
+        .reverse_failures = std.AutoHashMap(tunnel.ServiceId, ReverseTargetState).init(allocator),
     };
     defer client.channel.deinit();
     defer client.connections.deinit();
@@ -1788,14 +1974,14 @@ test "forwardLocalData sends plaintext frames" {
     const conn = try LocalConnection.create(allocator, 1, 42, local_pair[0], &client);
     defer conn.releaseRef();
 
-    _ = try posix.write(local_pair[1], "ping");
+    try writeAllCompat(local_pair[1], "ping");
 
     try client.forwardLocalData(conn);
 
     var frame_header: [4]u8 = undefined;
     try common.recvAllFromFd(tunnel_pair[1], &frame_header);
     const frame_len = std.mem.readInt(u32, frame_header[0..4], .big);
-    var payload = try allocator.alloc(u8, frame_len);
+    const payload = try allocator.alloc(u8, frame_len);
     defer allocator.free(payload);
     try common.recvAllFromFd(tunnel_pair[1], payload);
 
@@ -1803,6 +1989,213 @@ test "forwardLocalData sends plaintext frames" {
     try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, payload[1..3], .big));
     try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, payload[3..7], .big));
     try std.testing.expectEqualStrings("ping", payload[7..]);
+}
+
+test "forwardLocalData sends close on EOF and shuts down write half" {
+    if (builtin.target.os.tag == .windows) return;
+
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    global_allocator = allocator;
+
+    var cfg = try config.ClientConfig.init(allocator);
+    defer cfg.deinit();
+
+    const tunnel_pair = try makeSocketPair();
+    defer common.closeFd(tunnel_pair[0]);
+    defer common.closeFd(tunnel_pair[1]);
+
+    const local_pair = try makeSocketPair();
+    defer common.closeFd(local_pair[1]);
+
+    const channel = try transport.Channel.init(.{
+        .allocator = allocator,
+        .fd = tunnel_pair[0],
+        .cipher = "none",
+        .psk = "",
+        .static_keypair = std.crypto.dh.X25519.KeyPair.generate(std.Options.debug_io),
+        .role = .client,
+        .version = build_options.version,
+    });
+
+    var client = TunnelClient{
+        .tunnel_fd = tunnel_pair[0],
+        .tunnel_index = 0,
+        .service_id = 1,
+        .connections = std.AutoHashMap(tunnel.StreamId, *LocalConnection).init(allocator),
+        .connections_mutex = std.Io.Mutex.init,
+        .channel = channel,
+        .next_stream_id = std.atomic.Value(u32).init(2),
+        .running = std.atomic.Value(bool).init(true),
+        .udp_forwarder = null,
+        .transport = .tcp,
+        .heartbeat_timeout_ms = 0,
+        .last_heartbeat_time = std.atomic.Value(i64).init(common.milliTimestamp()),
+        .disconnect_reason = .none,
+        .default_token = "",
+        .cfg = &cfg,
+        .reverse_failures = std.AutoHashMap(tunnel.ServiceId, ReverseTargetState).init(allocator),
+    };
+    defer client.channel.deinit();
+    defer client.connections.deinit();
+
+    const conn = try LocalConnection.create(allocator, 1, 77, local_pair[0], &client);
+    defer conn.releaseRef();
+
+    common.shutdownSocket(local_pair[1], .both);
+    common.closeFd(local_pair[1]);
+
+    try client.forwardLocalData(conn);
+
+    var frame_header: [4]u8 = undefined;
+    try common.recvAllFromFd(tunnel_pair[1], &frame_header);
+    const frame_len = std.mem.readInt(u32, frame_header[0..4], .big);
+    const payload = try allocator.alloc(u8, frame_len);
+    defer allocator.free(payload);
+    try common.recvAllFromFd(tunnel_pair[1], payload);
+
+    const close_msg = try tunnel.CloseMsg.decode(payload);
+    try std.testing.expectEqual(@as(u16, 1), close_msg.service_id);
+    try std.testing.expectEqual(@as(u32, 77), close_msg.stream_id);
+    try std.testing.expectEqual(false, conn.fd_closed.load(.acquire));
+    try std.testing.expectEqual(true, conn.read_closed.load(.acquire));
+    try std.testing.expectEqual(true, conn.write_closed.load(.acquire));
+}
+
+test "completeLocalConnection suppresses duplicate close frames" {
+    if (builtin.target.os.tag == .windows) return;
+
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    global_allocator = allocator;
+
+    var cfg = try config.ClientConfig.init(allocator);
+    defer cfg.deinit();
+
+    const tunnel_pair = try makeSocketPair();
+    defer common.closeFd(tunnel_pair[0]);
+    defer common.closeFd(tunnel_pair[1]);
+
+    const local_pair = try makeSocketPair();
+    defer common.closeFd(local_pair[1]);
+
+    const channel = try transport.Channel.init(.{
+        .allocator = allocator,
+        .fd = tunnel_pair[0],
+        .cipher = "none",
+        .psk = "",
+        .static_keypair = std.crypto.dh.X25519.KeyPair.generate(std.Options.debug_io),
+        .role = .client,
+        .version = build_options.version,
+    });
+
+    var client = TunnelClient{
+        .tunnel_fd = tunnel_pair[0],
+        .tunnel_index = 0,
+        .service_id = 1,
+        .connections = std.AutoHashMap(tunnel.StreamId, *LocalConnection).init(allocator),
+        .connections_mutex = std.Io.Mutex.init,
+        .channel = channel,
+        .next_stream_id = std.atomic.Value(u32).init(2),
+        .running = std.atomic.Value(bool).init(true),
+        .udp_forwarder = null,
+        .transport = .tcp,
+        .heartbeat_timeout_ms = 0,
+        .last_heartbeat_time = std.atomic.Value(i64).init(common.milliTimestamp()),
+        .disconnect_reason = .none,
+        .default_token = "",
+        .cfg = &cfg,
+        .reverse_failures = std.AutoHashMap(tunnel.ServiceId, ReverseTargetState).init(allocator),
+    };
+    defer client.channel.deinit();
+    defer client.connections.deinit();
+
+    const conn = try LocalConnection.create(allocator, 1, 88, local_pair[0], &client);
+    defer conn.releaseRef();
+
+    client.connections_mutex.lock(std.Options.debug_io) catch unreachable;
+    conn.acquireRef();
+    try client.connections.put(conn.stream_id, conn);
+    client.connections_mutex.unlock(std.Options.debug_io);
+
+    client.completeLocalConnection(conn, true);
+    client.completeLocalConnection(conn, true);
+
+    var frame_header: [4]u8 = undefined;
+    try common.recvAllFromFd(tunnel_pair[1], &frame_header);
+    const frame_len = std.mem.readInt(u32, frame_header[0..4], .big);
+    const payload = try allocator.alloc(u8, frame_len);
+    defer allocator.free(payload);
+    try common.recvAllFromFd(tunnel_pair[1], payload);
+
+    const close_msg = try tunnel.CloseMsg.decode(payload);
+    try std.testing.expectEqual(@as(u16, 1), close_msg.service_id);
+    try std.testing.expectEqual(@as(u32, 88), close_msg.stream_id);
+
+    var extra: [1]u8 = undefined;
+    try std.testing.expectError(error.WouldBlock, common.recvCompat(tunnel_pair[1], &extra));
+}
+
+test "recordReverseFailure enters cooldown and suppresses logs" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    global_allocator = allocator;
+
+    var cfg = try config.ClientConfig.init(allocator);
+    defer cfg.deinit();
+
+    const tunnel_pair = try makeSocketPair();
+    defer common.closeFd(tunnel_pair[0]);
+    defer common.closeFd(tunnel_pair[1]);
+
+    const channel = try transport.Channel.init(.{
+        .allocator = allocator,
+        .fd = tunnel_pair[0],
+        .cipher = "none",
+        .psk = "",
+        .static_keypair = std.crypto.dh.X25519.KeyPair.generate(std.Options.debug_io),
+        .role = .client,
+        .version = build_options.version,
+    });
+
+    var client = TunnelClient{
+        .tunnel_fd = tunnel_pair[0],
+        .tunnel_index = 0,
+        .service_id = 1,
+        .connections = std.AutoHashMap(tunnel.StreamId, *LocalConnection).init(allocator),
+        .connections_mutex = std.Io.Mutex.init,
+        .channel = channel,
+        .next_stream_id = std.atomic.Value(u32).init(2),
+        .running = std.atomic.Value(bool).init(true),
+        .udp_forwarder = null,
+        .transport = .tcp,
+        .heartbeat_timeout_ms = 0,
+        .last_heartbeat_time = std.atomic.Value(i64).init(common.milliTimestamp()),
+        .disconnect_reason = .none,
+        .default_token = "",
+        .cfg = &cfg,
+        .reverse_failures = std.AutoHashMap(tunnel.ServiceId, ReverseTargetState).init(allocator),
+    };
+    defer client.channel.deinit();
+    defer client.connections.deinit();
+    defer client.reverse_failures.deinit();
+
+    client.recordReverseFailure(42, "127.0.0.1", 18083, error.ConnectionRefused);
+    client.recordReverseFailure(42, "127.0.0.1", 18083, error.ConnectionRefused);
+
+    try std.testing.expect(client.reverseTargetCoolingDown(42));
+    const state = client.reverse_failures.get(42).?;
+    try std.testing.expect(state.failure_count >= 2);
+    try std.testing.expect(state.cooldown_until_ms > common.milliTimestamp());
+    try std.testing.expect(state.suppressed_logs >= 1);
+
+    client.clearReverseFailure(42);
+    const cleared = client.reverse_failures.get(42).?;
+    try std.testing.expectEqual(@as(usize, 0), cleared.failure_count);
+    try std.testing.expectEqual(@as(i64, 0), cleared.cooldown_until_ms);
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
