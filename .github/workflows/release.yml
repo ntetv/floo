@@ -31,36 +31,6 @@ jobs:
           ./zig-out/bin/flooc --version
           ./zig-out/bin/floos --version
 
-  windows-gui:
-    name: Build Windows GUI Shell
-    runs-on: windows-latest
-    needs: test
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: website/package-lock.json
-
-      - name: Install website dependencies
-        working-directory: ./website
-        run: npm ci
-
-      - name: Build floo-windows.exe prototype
-        working-directory: ./website
-        run: npm run build:desktop:win
-
-      - name: Upload Windows GUI shell
-        uses: actions/upload-artifact@v4
-        with:
-          name: floo-windows-gui
-          path: website/release/windows-gui/floo-windows.exe
-
   cross-compile:
     name: Cross-Compile Release Binaries
     runs-on: ubuntu-latest
@@ -114,10 +84,6 @@ jobs:
                 echo "Warning: $bin not found for ${target}"
               fi
             done
-
-            if [[ "$target" == *"windows"* ]] && [[ -f gui-artifacts/floo-windows.exe ]]; then
-              cp gui-artifacts/floo-windows.exe "$out_dir/floo-windows.exe"
-            fi
 
             if [[ "$target" == *"macos"* ]]; then
               cp floo-macos.sh "$out_dir/"
@@ -230,9 +196,9 @@ jobs:
             | **Linux ARM64 (static)** | `floo-aarch64-linux-musl.tar.gz` | ARM containers and generic ARM64 hosts |
             | **macOS Intel** | `floo-x86_64-macos.tar.gz` | macOS 11+ universal baseline |
             | **macOS Apple Silicon** | `floo-aarch64-macos.tar.gz` | M1/M2/M3/M4 with ARMv8 crypto |
-            | **Windows x86_64** | `floo-x86_64-windows.zip` | Core binaries, sample configs, and GUI shell prototype |
+            | **Windows x86_64** | `floo-x86_64-windows.zip` | Core binaries and sample configs |
 
-            ⚡ **Recommended:** Native macOS bundles, static Linux bundles, and the Windows zip now include the preview GUI entry alongside the core binaries.
+            ⚡ **Recommended:** Native macOS bundles, static Linux bundles, and the Windows zip ship the core client/server binaries with example configs.
 
             **Extract and use:**
             ```bash
@@ -244,9 +210,8 @@ jobs:
 
             **Windows status:**
             ```text
-            Current release bundles ship flooc.exe, floos.exe, example configs,
-            and floo-windows.exe as a GUI shell prototype.
-            Native backend wiring is still in development.
+            Current release bundles ship flooc.exe, floos.exe, and example configs.
+            GUI manager packaging is intentionally deferred until the core tunnel work is fully settled.
             ```
 
             **macOS terminal manager:**
