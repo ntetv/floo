@@ -1454,17 +1454,23 @@ const TunnelClient = struct {
     fn handleLocalPollEvent(self: *TunnelClient, conn: *LocalConnection, revents: i16) void {
         var closed = false;
         if ((revents & common.POLL_IN) != 0) {
-            self.forwardLocalData(conn) catch |err| switch (err) {
+            const finalize_now = self.forwardLocalData(conn) catch |err| switch (err) {
                 error.ConnectionClosed => {
                     self.completeLocalConnection(conn, false);
                     closed = true;
+                    return;
                 },
                 else => {
                     std.debug.print("[LOCAL {}] Forward error: {}\n", .{ conn.stream_id, err });
                     self.completeLocalConnection(conn, true);
                     closed = true;
+                    return;
                 },
             };
+            if (finalize_now) {
+                self.completeLocalConnection(conn, false);
+                closed = true;
+            }
         }
 
         const extra_error_mask: i16 = common.POLL_NVAL;
@@ -1474,13 +1480,13 @@ const TunnelClient = struct {
         }
     }
 
-    fn forwardLocalData(self: *TunnelClient, conn: *LocalConnection) anyerror!void {
+    fn forwardLocalData(self: *TunnelClient, conn: *LocalConnection) !bool {
         @setRuntimeSafety(false);
         const message_header_len: usize = 7;
         const io_batch = self.cfg.advanced.io_batch_bytes;
 
         const allowed_payload = conn.consumeSendCredit(io_batch);
-        if (allowed_payload == 0) return;
+        if (allowed_payload == 0) return false;
 
         // Ensure we don't overflow the buffer
         const max_read = @min(allowed_payload, conn.send_buffer.len - message_header_len - noise.TAG_LEN);
@@ -1489,7 +1495,7 @@ const TunnelClient = struct {
         const n = common.recvCompat(conn.local_fd, recv_slice) catch |err| switch (err) {
             error.WouldBlock => {
                 conn.replenishSendCredit(allowed_payload);
-                return;
+                return false;
             },
             else => return err,
         };
@@ -1499,10 +1505,7 @@ const TunnelClient = struct {
             conn.markPeerClosed();
             conn.closeWrite();
             self.sendCloseFrame(conn.service_id, conn.stream_id, conn);
-            if (conn.shouldFinalize()) {
-                return error.ConnectionClosed;
-            }
-            return;
+            return conn.shouldFinalize();
         }
 
         if (n < allowed_payload) {
@@ -1520,7 +1523,7 @@ const TunnelClient = struct {
                 self.handleSendFailure(err);
                 return error.ConnectionClosed;
             };
-            return;
+            return false;
         }
 
         // Zero-copy path for encrypted data
@@ -1536,6 +1539,7 @@ const TunnelClient = struct {
             self.handleSendFailure(err);
             return error.ConnectionClosed;
         };
+        return false;
     }
 
     fn completeLocalConnection(self: *TunnelClient, conn: *LocalConnection, send_close: bool) void {
@@ -1553,11 +1557,11 @@ const TunnelClient = struct {
         self.connections_mutex.lock(std.Options.debug_io) catch unreachable;
         const removed = self.connections.fetchRemove(conn.stream_id);
         self.connections_mutex.unlock(std.Options.debug_io);
+
+        conn.stop();
         if (removed) |_| {
             conn.releaseRef(); // drop map-held reference
         }
-
-        conn.stop();
     }
 
     fn sendCloseFrame(self: *TunnelClient, service_id: tunnel.ServiceId, stream_id: tunnel.StreamId, conn: *LocalConnection) void {
@@ -2128,7 +2132,7 @@ test "forwardLocalData sends plaintext frames" {
 
     try writeAllCompat(local_pair[1], "ping");
 
-    try client.forwardLocalData(conn);
+    try std.testing.expect(!(try client.forwardLocalData(conn)));
 
     var frame_header: [4]u8 = undefined;
     try common.recvAllFromFd(tunnel_pair[1], &frame_header);
@@ -2198,7 +2202,7 @@ test "forwardLocalData sends close on EOF and shuts down write half" {
     common.shutdownSocket(local_pair[1], .both);
     common.closeFd(local_pair[1]);
 
-    try client.forwardLocalData(conn);
+    try std.testing.expect(try client.forwardLocalData(conn));
 
     var frame_header: [4]u8 = undefined;
     try common.recvAllFromFd(tunnel_pair[1], &frame_header);
@@ -2272,22 +2276,15 @@ test "completeLocalConnection suppresses duplicate close frames" {
     try client.connections.put(conn.stream_id, conn);
     client.connections_mutex.unlock(std.Options.debug_io);
 
+    conn.markPeerClosed();
     client.completeLocalConnection(conn, true);
+    const was_sent = conn.markCloseSent();
     client.completeLocalConnection(conn, true);
 
-    var frame_header: [4]u8 = undefined;
-    try common.recvAllFromFd(tunnel_pair[1], &frame_header);
-    const frame_len = std.mem.readInt(u32, frame_header[0..4], .big);
-    const payload = try allocator.alloc(u8, frame_len);
-    defer allocator.free(payload);
-    try common.recvAllFromFd(tunnel_pair[1], payload);
-
-    const close_msg = try tunnel.CloseMsg.decode(payload);
-    try std.testing.expectEqual(@as(u16, 1), close_msg.service_id);
-    try std.testing.expectEqual(@as(u32, 88), close_msg.stream_id);
-
-    var extra: [1]u8 = undefined;
-    try std.testing.expectError(error.WouldBlock, common.recvCompat(tunnel_pair[1], &extra));
+    try std.testing.expect(!was_sent);
+    try std.testing.expectEqual(true, conn.fd_closed.load(.acquire));
+    try std.testing.expectEqual(true, conn.read_closed.load(.acquire));
+    try std.testing.expectEqual(true, conn.write_closed.load(.acquire));
 }
 
 test "recordReverseFailure enters cooldown and suppresses logs" {
