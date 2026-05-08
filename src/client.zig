@@ -27,6 +27,10 @@ const STREAM_WINDOW_BYTES: usize = 256 * 1024;
 const REVERSE_CONNECT_INITIAL_BACKOFF_MS: i64 = 100;
 const REVERSE_CONNECT_MAX_BACKOFF_MS: i64 = 5 * 1000;
 const REVERSE_CONNECT_LOG_INTERVAL_MS: i64 = 5 * 1000;
+const TUNNEL_CONNECT_SPREAD_MS: u64 = 150;
+const TUNNEL_RECONNECT_POLL_MS: u64 = 50;
+const TUNNEL_RECONNECT_LOG_INTERVAL_MS: i64 = 5 * 1000;
+const TUNNEL_HARD_FAILURE_COOLDOWN_MS: u64 = 5 * 1000;
 
 const CheckStatus = diagnostics.CheckStatus;
 const DisconnectReason = diagnostics.DisconnectReason;
@@ -106,6 +110,77 @@ fn emitSparePromote(mode_id: u8, tunnel_index: usize, active: usize, spare: usiz
 const TunnelRoleCounts = struct {
     active: usize,
     spare: usize,
+};
+
+const TunnelReconnectCoordinator = struct {
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
+    next_connect_at_ms: i64 = 0,
+    handshake_inflight: usize = 0,
+    last_log_ms: i64 = 0,
+    suppressed_logs: usize = 0,
+
+    fn waitTurn(self: *TunnelReconnectCoordinator, tunnel_index: usize, label: []const u8) void {
+        while (!shutdown_flag.load(.acquire)) {
+            var wait_ms: u64 = 0;
+            var should_log = false;
+            var suppressed_count: usize = 0;
+            const now = common.milliTimestamp();
+
+            self.mutex.lock(std.Options.debug_io) catch unreachable;
+            if (self.handshake_inflight == 0 and self.next_connect_at_ms <= now) {
+                self.handshake_inflight = 1;
+                self.next_connect_at_ms = now + TUNNEL_RECONNECT_POLL_MS;
+                self.mutex.unlock(std.Options.debug_io);
+                return;
+            }
+
+            wait_ms = if (self.handshake_inflight > 0)
+                TUNNEL_RECONNECT_POLL_MS
+            else
+                @intCast(@max(self.next_connect_at_ms - now, @as(i64, 0)));
+            if (now - self.last_log_ms >= TUNNEL_RECONNECT_LOG_INTERVAL_MS) {
+                should_log = true;
+                suppressed_count = self.suppressed_logs;
+                self.last_log_ms = now;
+                self.suppressed_logs = 0;
+            } else {
+                self.suppressed_logs += 1;
+            }
+            self.mutex.unlock(std.Options.debug_io);
+
+            if (should_log) {
+                if (suppressed_count > 0) {
+                    std.debug.print("[{s} {}] Reconnect coordinator delaying handshake for {}ms after suppressing {} queued attempts\n", .{ label, tunnel_index, wait_ms, suppressed_count });
+                } else {
+                    std.debug.print("[{s} {}] Reconnect coordinator delaying handshake for {}ms\n", .{ label, tunnel_index, wait_ms });
+                }
+            }
+
+            sleepForRetryWindow(@min(wait_ms, TUNNEL_RECONNECT_POLL_MS));
+        }
+    }
+
+    fn finishAttempt(self: *TunnelReconnectCoordinator, delay_ms: ?u64) void {
+        const now = common.milliTimestamp();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
+        if (self.handshake_inflight > 0) {
+            self.handshake_inflight -= 1;
+        }
+        if (delay_ms) |ms| {
+            const desired = now + @as(i64, @intCast(ms));
+            if (desired > self.next_connect_at_ms) {
+                self.next_connect_at_ms = desired;
+            }
+        }
+    }
+};
+
+const TunnelHandshakeState = struct {
+    failure_count: usize = 0,
+    cooldown_until_ms: i64 = 0,
+    last_log_ms: i64 = 0,
+    suppressed_logs: usize = 0,
 };
 
 fn countTunnelRoles(
@@ -1754,12 +1829,72 @@ const TunnelConnectionParams = struct {
     tunnel_clients_mutex: *std.Io.Mutex,
     cpu_index: ?usize,
     role: *std.atomic.Value(TunnelSlotRole),
+    reconnect_coordinator: *TunnelReconnectCoordinator,
+    handshake_state: *TunnelHandshakeState,
 };
 
 const TunnelSlotRole = enum(u8) {
     active,
     spare,
 };
+
+fn initialTunnelConnectDelayMs(cfg: *const config.ClientConfig, role: TunnelSlotRole, tunnel_index: usize) u64 {
+    return switch (role) {
+        .active => tunnel_index * TUNNEL_CONNECT_SPREAD_MS,
+        .spare => @max(cfg.advanced.num_tunnels, 1) * TUNNEL_CONNECT_SPREAD_MS,
+    };
+}
+
+fn sleepForRetryWindow(wait_ms: u64) void {
+    common.crossSleep(wait_ms * std.time.ns_per_ms);
+}
+
+fn waitForHandshakeCooldown(state: *TunnelHandshakeState, tunnel_index: usize, label: []const u8) void {
+    while (!shutdown_flag.load(.acquire)) {
+        var wait_ms: u64 = 0;
+        var should_log = false;
+        var suppressed_count: usize = 0;
+        const now = common.milliTimestamp();
+
+        if (state.cooldown_until_ms <= now) return;
+
+        wait_ms = @intCast(@max(state.cooldown_until_ms - now, @as(i64, 0)));
+        if (now - state.last_log_ms >= TUNNEL_RECONNECT_LOG_INTERVAL_MS) {
+            should_log = true;
+            suppressed_count = state.suppressed_logs;
+            state.last_log_ms = now;
+            state.suppressed_logs = 0;
+        } else {
+            state.suppressed_logs += 1;
+        }
+
+        if (should_log) {
+            if (suppressed_count > 0) {
+                std.debug.print("[{s} {}] Handshake cooldown active for {}ms after suppressing {} attempts\n", .{ label, tunnel_index, wait_ms, suppressed_count });
+            } else {
+                std.debug.print("[{s} {}] Handshake cooldown active for {}ms\n", .{ label, tunnel_index, wait_ms });
+            }
+        }
+
+        sleepForRetryWindow(@min(wait_ms, TUNNEL_RECONNECT_POLL_MS));
+    }
+}
+
+fn noteTunnelHandshakeFailure(state: *TunnelHandshakeState) u64 {
+    state.failure_count += 1;
+    const shift: u6 = @intCast(@min(state.failure_count - 1, @as(usize, 5)));
+    const multiplier = @as(u64, 1) << shift;
+    const cooldown_ms = TUNNEL_HARD_FAILURE_COOLDOWN_MS * multiplier;
+    state.cooldown_until_ms = common.milliTimestamp() + @as(i64, @intCast(cooldown_ms));
+    return cooldown_ms;
+}
+
+fn clearTunnelHandshakeFailures(state: *TunnelHandshakeState) void {
+    state.failure_count = 0;
+    state.cooldown_until_ms = 0;
+    state.last_log_ms = 0;
+    state.suppressed_logs = 0;
+}
 
 /// Tunnel connection thread with auto-reconnection
 fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
@@ -1768,14 +1903,25 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
     var retry_delay_ms = params.cfg.advanced.reconnect_initial_delay_ms;
     var attempt: usize = 0;
 
+    const initial_delay_ms = initialTunnelConnectDelayMs(params.cfg, params.role.load(.acquire), params.tunnel_index);
+    if (initial_delay_ms > 0) {
+        common.crossSleep(initial_delay_ms * std.time.ns_per_ms);
+        if (shutdown_flag.load(.acquire)) return;
+    }
+
     while (!shutdown_flag.load(.acquire)) {
+        const label: []const u8 = if (params.role.load(.acquire) == .spare) "SPARE" else "TUNNEL";
+        waitForHandshakeCooldown(params.handshake_state, params.tunnel_index, label);
+        params.reconnect_coordinator.waitTurn(params.tunnel_index, label);
+        if (shutdown_flag.load(.acquire)) break;
+
         attempt += 1;
 
         var proxy_cfg_opt: ?proxy.ProxyConfig = null;
-        const label: []const u8 = if (params.role.load(.acquire) == .spare) "SPARE" else "TUNNEL";
         if (params.cfg.advanced.proxy_url.len > 0) {
             proxy_cfg_opt = proxy.ProxyConfig.parseUrl(global_allocator, params.cfg.advanced.proxy_url) catch |err| {
                 std.debug.print("[{s} {}] Invalid proxy URL: {}\n", .{ label, params.tunnel_index, err });
+                params.reconnect_coordinator.finishAttempt(retry_delay_ms);
                 const ns = retry_delay_ms * std.time.ns_per_ms;
                 common.crossSleep(ns);
                 retry_delay_ms = @min(retry_delay_ms * params.cfg.advanced.reconnect_backoff_multiplier, params.cfg.advanced.reconnect_max_delay_ms);
@@ -1802,6 +1948,7 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
             params.remote_port,
         ) catch |err| {
             std.debug.print("[{s} {}] Connection failed (attempt {}): {}, retrying in {}ms...\n", .{ label, params.tunnel_index, attempt, err, retry_delay_ms });
+            params.reconnect_coordinator.finishAttempt(retry_delay_ms);
             {
                 const ns = retry_delay_ms * std.time.ns_per_ms;
                 common.crossSleep(ns);
@@ -1834,6 +1981,7 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
         ) catch |err| {
             switch (err) {
                 error.HandshakeFailed, error.AuthenticationFailed, error.MissingPsk, error.VersionMismatch => {
+                    const cooldown_ms = noteTunnelHandshakeFailure(params.handshake_state);
                     emitHandshakeFailClient(
                         params.cfg.advanced.mode_id,
                         params.remote_host,
@@ -1842,22 +1990,23 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
                     );
                     switch (err) {
                         error.HandshakeFailed => std.debug.print(
-                            "[{s} {}] Tunnel handshake failed. Possible causes: server not deployed yet, non-floo service on the target port, or mismatched cipher/PSK.\n",
-                            .{ label, params.tunnel_index },
+                            "[{s} {}] Tunnel handshake failed. Possible causes: server not deployed yet, non-floo service on the target port, or mismatched cipher/PSK. Cooling down for {}ms.\n",
+                            .{ label, params.tunnel_index, cooldown_ms },
                         ),
                         error.VersionMismatch => std.debug.print(
-                            "[{s} {}] Tunnel version mismatch. Update server/client to the same Floo version.\n",
-                            .{ label, params.tunnel_index },
+                            "[{s} {}] Tunnel version mismatch. Update server/client to the same Floo version. Cooling down for {}ms.\n",
+                            .{ label, params.tunnel_index, cooldown_ms },
                         ),
                         error.AuthenticationFailed, error.MissingPsk => std.debug.print(
-                            "[{s} {}] Tunnel authentication failed. Check cipher/PSK on both sides.\n",
-                            .{ label, params.tunnel_index },
+                            "[{s} {}] Tunnel authentication failed. Check cipher/PSK on both sides. Cooling down for {}ms.\n",
+                            .{ label, params.tunnel_index, cooldown_ms },
                         ),
                         else => unreachable,
                     }
                 },
                 else => std.debug.print("[{s} {}] Failed to create client: {}\n", .{ label, params.tunnel_index, err }),
             }
+            params.reconnect_coordinator.finishAttempt(retry_delay_ms);
             {
                 const ns = retry_delay_ms * std.time.ns_per_ms;
                 common.crossSleep(ns);
@@ -1873,6 +2022,8 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
 
         // Reset retry delay on successful connection
         retry_delay_ms = params.cfg.advanced.reconnect_initial_delay_ms;
+        clearTunnelHandshakeFailures(params.handshake_state);
+        params.reconnect_coordinator.finishAttempt(null);
 
         // Run client (blocks until disconnection)
         tunnel_client.run();
@@ -1891,6 +2042,7 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
 
         // Check if reconnection is enabled
         if (!params.cfg.advanced.reconnect_enabled or shutdown_flag.load(.acquire)) {
+            params.reconnect_coordinator.finishAttempt(null);
             std.debug.print("[{s} {}] Reconnection disabled or shutting down\n", .{ label, params.tunnel_index });
             break;
         }
@@ -2198,6 +2350,25 @@ test "recordReverseFailure enters cooldown and suppresses logs" {
     try std.testing.expectEqual(@as(i64, 0), cleared.cooldown_until_ms);
 }
 
+test "tunnel handshake failures enter cooldown and clear on success" {
+    var state = TunnelHandshakeState{};
+
+    const first = noteTunnelHandshakeFailure(&state);
+    try std.testing.expectEqual(TUNNEL_HARD_FAILURE_COOLDOWN_MS, first);
+    try std.testing.expect(state.cooldown_until_ms > common.milliTimestamp());
+    try std.testing.expectEqual(@as(usize, 1), state.failure_count);
+
+    const second = noteTunnelHandshakeFailure(&state);
+    try std.testing.expectEqual(TUNNEL_HARD_FAILURE_COOLDOWN_MS * 2, second);
+    try std.testing.expectEqual(@as(usize, 2), state.failure_count);
+
+    clearTunnelHandshakeFailures(&state);
+    try std.testing.expectEqual(@as(usize, 0), state.failure_count);
+    try std.testing.expectEqual(@as(i64, 0), state.cooldown_until_ms);
+    try std.testing.expectEqual(@as(i64, 0), state.last_log_ms);
+    try std.testing.expectEqual(@as(usize, 0), state.suppressed_logs);
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     common.initWinSock();
     var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
@@ -2390,6 +2561,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer allocator.free(tunnel_clients);
     const tunnel_roles = try allocator.alloc(std.atomic.Value(TunnelSlotRole), total_tunnels);
     defer allocator.free(tunnel_roles);
+    const reconnect_coordinator = try allocator.create(TunnelReconnectCoordinator);
+    defer allocator.destroy(reconnect_coordinator);
+    reconnect_coordinator.* = .{};
+    const handshake_states = try allocator.alloc(TunnelHandshakeState, total_tunnels);
+    defer allocator.free(handshake_states);
 
     // Initialize all slots to null
     for (tunnel_clients) |*slot| {
@@ -2397,6 +2573,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     for (tunnel_roles, 0..) |*role, i| {
         role.* = std.atomic.Value(TunnelSlotRole).init(if (cfg.advanced.hot_spare and i == num_tunnels) .spare else .active);
+    }
+    for (handshake_states) |*state| {
+        state.* = .{};
     }
 
     var tunnel_clients_mutex = std.Io.Mutex.init;
@@ -2441,6 +2620,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .tunnel_clients_mutex = &tunnel_clients_mutex,
             .cpu_index = cpu_index,
             .role = &tunnel_roles[i],
+            .reconnect_coordinator = reconnect_coordinator,
+            .handshake_state = &handshake_states[i],
         };
 
         // Spawn tunnel handler thread with reconnection
