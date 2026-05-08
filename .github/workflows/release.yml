@@ -76,13 +76,6 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Download Windows GUI shell
-        if: needs.windows-gui.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: floo-windows-gui
-          path: gui-artifacts
-
       - name: Build all platforms
         run: |
           zig build release-all
