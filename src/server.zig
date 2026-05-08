@@ -115,9 +115,9 @@ fn logReverseAcceptRateLimited(service: config.Service) void {
         const suppressed = suppressed_reverse_accept_logs.swap(0, .acq_rel);
         last_reverse_accept_log_ms.store(now, .release);
         if (suppressed > 0) {
-            std.debug.print("[REVERSE] Accepting connections on {s}:{} for service '{s}' after suppressing {} similar lines\n", .{ service.address, service.port, service.name, suppressed });
+            tracePrint(enable_tunnel_trace, "[REVERSE] Accepted connections on {s}:{} for service '{s}' after suppressing {} similar lines\n", .{ service.address, service.port, service.name, suppressed });
         } else {
-            std.debug.print("[REVERSE] Accepting connections on {s}:{} for service '{s}'\n", .{ service.address, service.port, service.name });
+            tracePrint(enable_tunnel_trace, "[REVERSE] Accepted connections on {s}:{} for service '{s}'\n", .{ service.address, service.port, service.name });
         }
     } else {
         _ = suppressed_reverse_accept_logs.fetchAdd(1, .acq_rel);
@@ -1184,7 +1184,11 @@ const TunnelConnection = struct {
                     closed = true;
                 },
                 else => {
-                    std.debug.print("[STREAM {}] Forward error: {}\n", .{ stream.stream_id, err });
+                    if (err == error.ConnectionResetByPeer) {
+                        tracePrint(enable_stream_trace, "[STREAM {}] Connection reset by peer\n", .{stream.stream_id});
+                    } else {
+                        std.debug.print("[STREAM {}] Forward error: {}\n", .{ stream.stream_id, err });
+                    }
                     self.completeStream(stream, true);
                     closed = true;
                 },

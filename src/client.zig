@@ -31,6 +31,7 @@ const TUNNEL_CONNECT_SPREAD_MS: u64 = 150;
 const TUNNEL_RECONNECT_POLL_MS: u64 = 50;
 const TUNNEL_RECONNECT_LOG_INTERVAL_MS: i64 = 5 * 1000;
 const TUNNEL_HARD_FAILURE_COOLDOWN_MS: u64 = 5 * 1000;
+const TUNNEL_RECONNECT_SUMMARY_INTERVAL_MS: i64 = 5 * 1000;
 
 const CheckStatus = diagnostics.CheckStatus;
 const DisconnectReason = diagnostics.DisconnectReason;
@@ -52,6 +53,7 @@ var signal_pipe_read_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.f
 var signal_pipe_write_fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(common.INVALID_FD);
 var tunnel_cpu_assigner: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var tunnel_cpu_cache: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var disconnect_summary_state = DisconnectSummaryState{};
 
 fn setupSignalPipe() !void {
     if (builtin.target.os.tag == .windows) return;
@@ -103,6 +105,10 @@ fn emitTunnelDownClient(mode_id: u8, tunnel_index: usize, reason: DisconnectReas
     diagnostics.emitEvent(.warn, "TUNNEL_DOWN|ROLE=CLIENT|MODE={}|TUNNEL={}|REASON={s}", .{ mode_id, tunnel_index, diagnostics.disconnectReasonLabel(reason) });
 }
 
+fn emitTunnelDownSummary(mode_id: u8, reason: DisconnectReason) void {
+    disconnect_summary_state.record(mode_id, reason);
+}
+
 fn emitSparePromote(mode_id: u8, tunnel_index: usize, active: usize, spare: usize) void {
     diagnostics.emitEvent(.event, "SPARE_PROMOTE|ROLE=CLIENT|MODE={}|TUNNEL={}|ACTIVE={}|SPARE={}", .{ mode_id, tunnel_index, active, spare });
 }
@@ -110,6 +116,43 @@ fn emitSparePromote(mode_id: u8, tunnel_index: usize, active: usize, spare: usiz
 const TunnelRoleCounts = struct {
     active: usize,
     spare: usize,
+};
+
+const DisconnectSummaryState = struct {
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
+    last_log_ms: i64 = 0,
+    suppressed_count: usize = 0,
+    last_reason: DisconnectReason = .none,
+    last_mode_id: u8 = 0,
+
+    fn record(self: *DisconnectSummaryState, mode_id: u8, reason: DisconnectReason) void {
+        const now = common.milliTimestamp();
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
+
+        if (self.last_log_ms != 0 and now - self.last_log_ms < TUNNEL_RECONNECT_SUMMARY_INTERVAL_MS and self.last_reason == reason and self.last_mode_id == mode_id) {
+            self.suppressed_count += 1;
+            return;
+        }
+
+        if (self.suppressed_count > 0) {
+            diagnostics.emitEvent(.warn, "TUNNEL_DOWN_BURST|ROLE=CLIENT|MODE={}|REASON={s}|COUNT={}", .{ self.last_mode_id, diagnostics.disconnectReasonLabel(self.last_reason), self.suppressed_count });
+        }
+
+        self.last_log_ms = now;
+        self.suppressed_count = 0;
+        self.last_reason = reason;
+        self.last_mode_id = mode_id;
+        emitTunnelDownClient(mode_id, 0, reason);
+    }
+
+    fn flush(self: *DisconnectSummaryState) void {
+        self.mutex.lock(std.Options.debug_io) catch unreachable;
+        defer self.mutex.unlock(std.Options.debug_io);
+        if (self.suppressed_count == 0) return;
+        diagnostics.emitEvent(.warn, "TUNNEL_DOWN_BURST|ROLE=CLIENT|MODE={}|REASON={s}|COUNT={}", .{ self.last_mode_id, diagnostics.disconnectReasonLabel(self.last_reason), self.suppressed_count });
+        self.suppressed_count = 0;
+    }
 };
 
 const TunnelReconnectCoordinator = struct {
@@ -150,9 +193,9 @@ const TunnelReconnectCoordinator = struct {
 
             if (should_log) {
                 if (suppressed_count > 0) {
-                    std.debug.print("[{s} {}] Reconnect coordinator delaying handshake for {}ms after suppressing {} queued attempts\n", .{ label, tunnel_index, wait_ms, suppressed_count });
+                    tracePrint(enable_tunnel_trace, "[{s} {}] Reconnect coordinator delaying handshake for {}ms after suppressing {} queued attempts\n", .{ label, tunnel_index, wait_ms, suppressed_count });
                 } else {
-                    std.debug.print("[{s} {}] Reconnect coordinator delaying handshake for {}ms\n", .{ label, tunnel_index, wait_ms });
+                    tracePrint(enable_tunnel_trace, "[{s} {}] Reconnect coordinator delaying handshake for {}ms\n", .{ label, tunnel_index, wait_ms });
                 }
             }
 
@@ -249,11 +292,13 @@ fn processSignalNotifications(notice_printed: *bool) void {
     if (flush_stats_requested.swap(false, .acq_rel)) {
         diagnostics.flushEncryptStats("client", &encrypt_total_ns, &encrypt_calls);
         diagnostics.flushThroughputStats("client", &tunnel_tx_bytes, &tunnel_rx_bytes);
+        disconnect_summary_state.flush();
     }
     if (sighup_requested.swap(false, .acq_rel)) {
         std.debug.print("\n[INFO] Configuration reload via SIGHUP is currently disabled; restart flooc to apply changes.\n", .{});
     }
     if (!notice_printed.* and shutdown_flag.load(.acquire)) {
+        disconnect_summary_state.flush();
         std.debug.print("\n[SHUTDOWN] Received interrupt, stopping client...\n", .{});
         notice_printed.* = true;
     }
@@ -890,11 +935,11 @@ const TunnelClient = struct {
         channel_guard = false;
 
         if (client.heartbeat_timeout_ms > 0) {
-            std.debug.print("[CLIENT] Heartbeat timeout enabled: {}s\n", .{cfg.advanced.heartbeat_timeout_seconds});
+            tracePrint(enable_tunnel_trace, "[CLIENT] Heartbeat timeout enabled: {}s\n", .{cfg.advanced.heartbeat_timeout_seconds});
         }
 
         if (client.default_token.len > 0) {
-            std.debug.print("[CLIENT] Authentication enabled with token\n", .{});
+            tracePrint(enable_tunnel_trace, "[CLIENT] Authentication enabled with token\n", .{});
         }
 
         return client;
@@ -978,7 +1023,7 @@ const TunnelClient = struct {
             return;
         }
 
-        std.debug.print("[CLIENT] Tunnel handler started (buffer size: {})\n", .{decoder.buffer.len});
+        tracePrint(enable_tunnel_trace, "[CLIENT] Tunnel handler started (buffer size: {})\n", .{decoder.buffer.len});
 
         // Poll timeout: check heartbeat every second if enabled, otherwise use 5 seconds
         const poll_timeout_ms: i32 = if (self.heartbeat_timeout_ms > 0) 1000 else 5000;
@@ -1081,7 +1126,7 @@ const TunnelClient = struct {
 
                         if (n == 0) {
                             self.markDisconnectReason(.eof);
-                            std.debug.print("[CLIENT] Tunnel server disconnected\n", .{});
+                            tracePrint(enable_tunnel_trace, "[CLIENT] Tunnel server disconnected\n", .{});
                             self.running.store(false, .release);
                             fatal_error = true;
                             break :loop;
@@ -1145,7 +1190,7 @@ const TunnelClient = struct {
             if (!self.running.load(.acquire)) break;
         }
 
-        std.debug.print("[CLIENT] Tunnel handler stopping\n", .{});
+        tracePrint(enable_tunnel_trace, "[CLIENT] Tunnel handler stopping\n", .{});
         self.cleanup();
     }
 
@@ -1461,7 +1506,11 @@ const TunnelClient = struct {
                     return;
                 },
                 else => {
-                    std.debug.print("[LOCAL {}] Forward error: {}\n", .{ conn.stream_id, err });
+                    if (err == error.ConnectionResetByPeer) {
+                        tracePrint(enable_tunnel_trace, "[LOCAL {}] Connection reset by peer\n", .{conn.stream_id});
+                    } else {
+                        std.debug.print("[LOCAL {}] Forward error: {}\n", .{ conn.stream_id, err });
+                    }
                     self.completeLocalConnection(conn, true);
                     closed = true;
                     return;
@@ -2038,9 +2087,9 @@ fn tunnelThreadWithReconnection(params_ptr: *TunnelConnectionParams) void {
         params.tunnel_clients_mutex.unlock(std.Options.debug_io);
         if (params.role.load(.acquire) == .active) {
             const reason = tunnel_client.disconnect_reason;
-            emitTunnelDownClient(params.cfg.advanced.mode_id, params.tunnel_index, reason);
+            emitTunnelDownSummary(params.cfg.advanced.mode_id, reason);
             params.role.store(.spare, .release);
-            std.debug.print("[TUNNEL {}] Active tunnel disconnected; slot demoted to spare after reconnect\n", .{params.tunnel_index});
+            tracePrint(enable_tunnel_trace, "[TUNNEL {}] Active tunnel disconnected; slot demoted to spare after reconnect\n", .{params.tunnel_index});
         }
         tunnel_client.destroy();
 
